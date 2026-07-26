@@ -24,6 +24,9 @@ htmlcov/
 .sentinel/runs/
 out/
 
+# Local drafts — text destined for the Devpost form, not for the repo
+docs/DEVPOST_STORY.md
+
 # Editors / OS
 .DS_Store
 .idea/
