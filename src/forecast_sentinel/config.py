@@ -98,6 +98,16 @@ class SentinelConfig:
     def run_dir(self) -> Path:
         return self.state_dir / "runs"
 
+    @property
+    def mcp_server_log(self) -> Path:
+        """Where the stdio MCP server's stderr is parked.
+
+        The DataHub MCP server logs every GraphQL query at DEBUG level. Left on
+        the terminal it buries the sentinel's own output, so it goes here and
+        stays available for debugging.
+        """
+        return self.state_dir / "mcp-server.log"
+
     @classmethod
     def from_env(cls, env_file: Path | None = None) -> SentinelConfig:
         load_dotenv(dotenv_path=env_file, override=False)

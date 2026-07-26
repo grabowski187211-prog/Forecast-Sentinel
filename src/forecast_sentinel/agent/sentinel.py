@@ -93,13 +93,14 @@ class Sentinel:
         self._config = config
         self._client = anthropic or AsyncAnthropic()
         self._store = SnapshotStore(config.baseline_dir)
+        self._server_log = config.mcp_server_log
 
     # --- public API ---------------------------------------------------------
 
     async def capture_baseline(self, model_urn: str) -> SentinelRun:
         """Record the current schema of a model's training inputs as the baseline."""
         run = _new_run(model_urn)
-        async with DataHubMCP(self._config.datahub) as mcp:
+        async with DataHubMCP(self._config.datahub, server_log=self._server_log) as mcp:
             graph = await build_ml_lineage(mcp, model_urn)
             run.graph = graph
             run.model_label = _label_for(graph, model_urn)
@@ -126,7 +127,7 @@ class Sentinel:
         """Detect drift, judge consequence, and optionally record the verdict."""
         run = _new_run(model_urn)
 
-        async with DataHubMCP(self._config.datahub) as mcp:
+        async with DataHubMCP(self._config.datahub, server_log=self._server_log) as mcp:
             if missing := mcp.inventory.missing_read_tools():
                 run.notes.append(
                     "DataHub MCP server is missing expected read tools: "

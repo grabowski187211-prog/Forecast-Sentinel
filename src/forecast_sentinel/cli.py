@@ -93,7 +93,7 @@ def doctor(
     console.print(Panel(table, title="Configuration", border_style="cyan"))
 
     async def _probe() -> None:
-        async with DataHubMCP(dh) as mcp:
+        async with DataHubMCP(dh, server_log=config.mcp_server_log) as mcp:
             inv = mcp.inventory
             console.print(f"[green]Connected.[/] {len(inv.names)} MCP tools exposed.")
             if missing := inv.missing_read_tools():
@@ -125,9 +125,12 @@ def models(
 
     async def _search() -> object:
         async with DataHubHelper(config) as mcp:
-            return await mcp.call(
-                "search", {"query": "*", "entity_types": ["mlModel"], "num_results": limit}
-            )
+            # The DataHub MCP `search` tool takes only query/filter/num_results/
+            # sort_by/sort_order/offset — there is no `entity_types` parameter,
+            # and `entity_type:mlModel` in the query string does not filter
+            # either (verified against DataHub 1.5.0.6). So over-fetch and filter
+            # by URN prefix here, which is exact.
+            return await mcp.call("search", {"query": "*", "num_results": max(limit * 10, 50)})
 
     try:
         payload = asyncio.run(_search())
@@ -135,7 +138,7 @@ def models(
         console.print(f"[bold red]{exc}[/]")
         raise typer.Exit(EXIT_ERROR) from exc
 
-    urns = _collect_urns(payload)
+    urns = [u for u in _collect_urns(payload) if u.startswith("urn:li:mlModel:")][:limit]
     if not urns:
         console.print(
             "[yellow]No mlModel entities found.[/] Load demo ML metadata first:\n"
@@ -340,7 +343,9 @@ class DataHubHelper:
     """Thin async-context wrapper so `models` can reuse DataHubMCP directly."""
 
     def __init__(self, config: SentinelConfig) -> None:
-        self._mcp = DataHubMCP(config.datahub)
+        self._mcp = DataHubMCP(
+            config.datahub, server_log=config.mcp_server_log
+        )
 
     async def __aenter__(self) -> DataHubMCP:
         return await self._mcp.__aenter__()

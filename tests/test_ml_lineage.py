@@ -1,8 +1,12 @@
-"""Lineage assembly runs against fake MCP payloads.
+"""Lineage assembly, tested against the payload shapes DataHub actually returns.
 
-`get_lineage` returns one hop, so the multi-hop ML path (table -> feature ->
-model -> deployment) depends on the BFS here being correct and bounded. A fake
-MCP client lets that be tested without a DataHub instance.
+The canonical fixtures below were captured from a live self-hosted DataHub
+1.5.0.6 MCP server. An earlier version of this module failed three ways at once
+against that server, so these tests pin all three:
+
+* `get_lineage` takes `upstream: bool` + `max_hops`, not `direction: "UPSTREAM"`.
+* Entities are nested at `{"upstreams": {"searchResults": [{"entity": ...}]}}`.
+* A failing call must raise, not present itself as "no lineage found".
 """
 
 from __future__ import annotations
@@ -12,164 +16,238 @@ from typing import Any
 import pytest
 
 from forecast_sentinel.datahub.ml_lineage import (
+    LineageError,
     _parse_lineage_payload,
     build_ml_lineage,
 )
-from forecast_sentinel.datahub.urns import (
-    dataset_urn,
-    ml_feature_urn,
-    ml_model_urn,
-)
+from forecast_sentinel.datahub.urns import dataset_urn, ml_model_urn
 
 MODEL = ml_model_urn("mlflow", "demand-forecast-v3")
-FEATURE = ml_feature_urn("feast", "sales_features", "holiday_flag")
+FEAT = dataset_urn("snowflake", "sales.feat_seasonality")
 RAW = dataset_urn("snowflake", "sales.raw_sales")
+JOB = "urn:li:dataJob:(urn:li:dataFlow:(airflow,demand_planning,PROD),train_demand_forecast)"
 DEPLOYMENT = "urn:li:mlModelDeployment:(urn:li:dataPlatform:sagemaker,planning-api,PROD)"
 DASHBOARD = "urn:li:dashboard:(looker,exec_demand)"
 
 
-class FakeMCP:
-    """Stands in for DataHubMCP, serving a canned one-hop lineage graph."""
-
-    def __init__(self, upstream: dict[str, list[Any]], downstream: dict[str, list[Any]]) -> None:
-        self._up = upstream
-        self._down = downstream
-        self.calls: list[tuple[str, dict]] = []
-
-    async def call(self, name: str, arguments: dict | None = None) -> Any:
-        arguments = arguments or {}
-        self.calls.append((name, arguments))
-        if name != "get_lineage":
-            raise AssertionError(f"unexpected tool call: {name}")
-        table = self._up if arguments["direction"] == "UPSTREAM" else self._down
-        return {"relationships": table.get(arguments["urn"], [])}
+def live_envelope(*entities: dict, direction: str = "upstream", has_more: bool = False) -> dict:
+    """The exact response shape observed from DataHub 1.5.0.6."""
+    return {
+        f"{direction}s": {
+            "total": len(entities),
+            "facets": [{"field": "degree", "aggregations": [{"value": "1", "count": 0}]}],
+            "searchResults": [{"entity": e} for e in entities],
+            "offset": 0,
+            "returned": len(entities),
+            "hasMore": has_more,
+        }
+    }
 
 
-def _entity(urn: str, name: str | None = None) -> dict:
+def entity(urn: str, name: str | None = None, **extra: Any) -> dict:
     node: dict[str, Any] = {"urn": urn}
     if name:
         node["name"] = name
-    return {"entity": node}
+    node.update(extra)
+    return node
 
 
-class TestPayloadParsing:
-    @pytest.mark.parametrize("key", ["relationships", "entities", "results", "data", "items"])
-    def test_all_known_envelope_keys(self, key):
-        assets = _parse_lineage_payload({key: [_entity(RAW, "raw_sales")]})
-        assert len(assets) == 1
-        assert assets[0].name == "raw_sales"
+class FakeMCP:
+    """Stands in for DataHubMCP, asserting the call shape as it goes."""
+
+    def __init__(self, upstream: dict | None = None, downstream: dict | None = None) -> None:
+        self._up = upstream
+        self._down = downstream
+        self.calls: list[dict] = []
+
+    async def call(self, name: str, arguments: dict | None = None) -> Any:
+        arguments = arguments or {}
+        self.calls.append({"tool": name, **arguments})
+        assert name == "get_lineage", f"unexpected tool: {name}"
+        # The live server rejects `direction`; guard against a regression.
+        assert "direction" not in arguments, "get_lineage takes `upstream`, not `direction`"
+        assert isinstance(arguments.get("upstream"), bool)
+        return self._up if arguments["upstream"] else self._down
+
+
+class TestCallShape:
+    async def test_uses_upstream_bool_and_max_hops(self):
+        mcp = FakeMCP(live_envelope(entity(RAW)), live_envelope(direction="downstream"))
+        await build_ml_lineage(mcp, MODEL, max_hops=3, max_results=50)
+        assert len(mcp.calls) == 2, "one call per direction — the server does the multi-hop walk"
+        up = next(c for c in mcp.calls if c["upstream"] is True)
+        assert up["max_hops"] == 3
+        assert up["max_results"] == 50
+        assert up["urn"] == MODEL
+
+
+class TestLivePayload:
+    async def test_parses_the_real_shape_end_to_end(self):
+        """The full observed upstream response: a data job plus two datasets."""
+        mcp = FakeMCP(
+            live_envelope(
+                entity(JOB, type="DATA_JOB", dataFlow={"flowId": "demand_planning"}),
+                entity(FEAT, "sales.feat_seasonality", type="DATASET"),
+                entity(RAW, "sales.raw_sales", type="DATASET"),
+            ),
+            live_envelope(
+                entity(DEPLOYMENT, "planning-api"),
+                entity(DASHBOARD, "exec_demand"),
+                direction="downstream",
+            ),
+        )
+        graph = await build_ml_lineage(mcp, MODEL)
+
+        assert set(graph.upstream) == {JOB, FEAT, RAW}
+        assert set(graph.downstream) == {DEPLOYMENT, DASHBOARD}
+        assert graph.blast_radius == 2
+
+    async def test_training_datasets_are_reachable_for_snapshotting(self):
+        """The bug that broke `sentinel baseline`: datasets must be findable."""
+        mcp = FakeMCP(
+            live_envelope(
+                entity(JOB, type="DATA_JOB"),
+                entity(FEAT, "sales.feat_seasonality"),
+                entity(RAW, "sales.raw_sales"),
+            ),
+            live_envelope(direction="downstream"),
+        )
+        graph = await build_ml_lineage(mcp, MODEL)
+        datasets = sorted(
+            a.urn.raw for a in graph.upstream.values() if a.entity_type == "dataset"
+        )
+        assert datasets == sorted([FEAT, RAW])
+
+    async def test_entity_type_comes_from_the_urn_not_the_payload(self):
+        """Payload `type` is SCREAMING_SNAKE (DATA_JOB) and must not be trusted."""
+        mcp = FakeMCP(
+            live_envelope(entity(JOB, type="DATA_JOB")),
+            live_envelope(direction="downstream"),
+        )
+        graph = await build_ml_lineage(mcp, MODEL)
+        assert graph.upstream[JOB].entity_type == "dataJob"
+
+    async def test_editable_description_is_preferred(self):
+        mcp = FakeMCP(
+            live_envelope(
+                entity(RAW, "raw_sales", editableProperties={"description": "edited"},
+                       properties={"description": "original"})
+            ),
+            live_envelope(direction="downstream"),
+        )
+        graph = await build_ml_lineage(mcp, MODEL)
+        assert graph.upstream[RAW].description == "edited"
+
+    async def test_has_more_marks_truncated(self):
+        mcp = FakeMCP(
+            live_envelope(entity(RAW), has_more=True),
+            live_envelope(direction="downstream"),
+        )
+        graph = await build_ml_lineage(mcp, MODEL)
+        assert graph.truncated
+
+    async def test_root_is_not_listed_as_its_own_neighbour(self):
+        mcp = FakeMCP(
+            live_envelope(entity(MODEL), entity(RAW)),
+            live_envelope(direction="downstream"),
+        )
+        graph = await build_ml_lineage(mcp, MODEL)
+        assert MODEL not in graph.upstream
+
+
+class TestErrorsSurface:
+    async def test_total_failure_raises_rather_than_reporting_empty(self):
+        """The worst bug this module had: a broken API call looked like empty lineage."""
+
+        class Broken(FakeMCP):
+            async def call(self, name, arguments=None):
+                raise RuntimeError("unexpected keyword argument")
+
+        with pytest.raises(LineageError, match="both directions"):
+            await build_ml_lineage(Broken(), MODEL)
+
+    async def test_one_sided_failure_is_recorded_but_survivable(self):
+        class HalfBroken(FakeMCP):
+            async def call(self, name, arguments=None):
+                if arguments and arguments.get("upstream") is False:
+                    raise RuntimeError("GMS timeout")
+                return live_envelope(entity(RAW, "raw_sales"))
+
+        graph = await build_ml_lineage(HalfBroken(), MODEL)
+        assert RAW in graph.upstream
+        assert graph.downstream == {}
+        assert any("downstream" in e for e in graph.errors)
+        assert graph.summary()["errors"]
+
+
+class TestPayloadTolerance:
+    @pytest.mark.parametrize(
+        "key", ["searchResults", "relationships", "entities", "results", "items"]
+    )
+    def test_alternative_entity_list_keys(self, key):
+        assets, _ = _parse_lineage_payload({"upstreams": {key: [{"entity": entity(RAW, "raw")}]}})
+        assert [a.urn.raw for a in assets] == [RAW]
 
     def test_bare_list_of_urn_strings(self):
-        assets = _parse_lineage_payload([RAW, MODEL])
+        assets, _ = _parse_lineage_payload([RAW, MODEL])
         assert {a.urn.raw for a in assets} == {RAW, MODEL}
 
     def test_flat_entity_without_nesting(self):
-        assets = _parse_lineage_payload({"entities": [{"urn": RAW, "name": "raw_sales"}]})
-        assert assets[0].name == "raw_sales"
+        assets, _ = _parse_lineage_payload({"upstreams": {"searchResults": [entity(RAW, "raw")]}})
+        assert assets[0].name == "raw"
 
-    def test_entity_url_alias_keys(self):
-        assets = _parse_lineage_payload({"entities": [{"entityUrn": RAW}]})
+    def test_entity_urn_alias_key(self):
+        assets, _ = _parse_lineage_payload({"upstreams": {"searchResults": [{"entityUrn": RAW}]}})
         assert assets[0].urn.raw == RAW
 
     def test_garbage_entries_are_dropped_not_raised(self):
-        assets = _parse_lineage_payload(
-            {"entities": [{"urn": "not-a-urn"}, {"no_urn": 1}, 42, None, _entity(RAW)]}
+        assets, _ = _parse_lineage_payload(
+            {
+                "upstreams": {
+                    "searchResults": [
+                        {"urn": "not-a-urn"}, {"x": 1}, 42, None, entity(RAW),
+                    ]
+                }
+            }
         )
         assert [a.urn.raw for a in assets] == [RAW]
 
     def test_owners_and_tags_in_several_shapes(self):
-        assets = _parse_lineage_payload(
+        assets, _ = _parse_lineage_payload(
             {
-                "entities": [
-                    {
-                        "urn": RAW,
-                        "owners": [{"urn": "urn:li:corpuser:alice"}, "urn:li:corpuser:bob"],
-                        "tags": {"tags": [{"tag": "urn:li:tag:pii"}]},
-                    }
-                ]
+                "upstreams": {
+                    "searchResults": [
+                        entity(
+                            RAW,
+                            owners=[{"owner": {"urn": "urn:li:corpuser:alice"}},
+                                    "urn:li:corpuser:bob"],
+                            tags={"tags": [{"tag": {"urn": "urn:li:tag:pii"}}]},
+                        )
+                    ]
+                }
             }
         )
         assert assets[0].owners == ("urn:li:corpuser:alice", "urn:li:corpuser:bob")
         assert assets[0].tags == ("urn:li:tag:pii",)
 
-    def test_none_payload(self):
-        assert _parse_lineage_payload(None) == []
+    def test_none_and_unusable_payloads(self):
+        assert _parse_lineage_payload(None) == ([], False)
+        assert _parse_lineage_payload({}) == ([], False)
+        assert _parse_lineage_payload("nope") == ([], False)
 
 
-class TestBuildLineage:
-    @pytest.fixture
-    def mcp(self) -> FakeMCP:
-        # raw_sales -> holiday_flag feature -> model -> deployment + dashboard
-        return FakeMCP(
-            upstream={
-                MODEL: [_entity(FEATURE, "holiday_flag")],
-                FEATURE: [_entity(RAW, "raw_sales")],
-            },
-            downstream={
-                MODEL: [_entity(DEPLOYMENT, "planning-api"), _entity(DASHBOARD, "exec_demand")],
-            },
+class TestSummary:
+    async def test_summary_is_serialisable_and_counts_by_urn_type(self):
+        mcp = FakeMCP(
+            live_envelope(entity(JOB, type="DATA_JOB"), entity(RAW, "raw_sales")),
+            live_envelope(entity(DEPLOYMENT), direction="downstream"),
         )
-
-    async def test_walks_multiple_hops_upstream(self, mcp):
-        graph = await build_ml_lineage(mcp, MODEL)
-        assert set(graph.upstream) == {FEATURE, RAW}
-        assert graph.depth_reached >= 2
-
-    async def test_finds_serving_surfaces_downstream(self, mcp):
-        graph = await build_ml_lineage(mcp, MODEL)
-        assert set(graph.downstream) == {DEPLOYMENT, DASHBOARD}
-        assert graph.blast_radius == 2
-        serving = {a.urn.raw for a in graph.serving_surfaces}
-        assert DEPLOYMENT in serving
-        assert DASHBOARD in serving
-
-    async def test_training_dataset_is_reachable_for_snapshotting(self, mcp):
-        graph = await build_ml_lineage(mcp, MODEL)
-        datasets = [a.urn.raw for a in graph.upstream.values() if a.entity_type == "dataset"]
-        assert datasets == [RAW]
-
-    async def test_edges_point_in_the_direction_of_data_flow(self, mcp):
-        graph = await build_ml_lineage(mcp, MODEL)
-        assert (RAW, FEATURE) in graph.edges
-        assert (FEATURE, MODEL) in graph.edges
-        assert (MODEL, DEPLOYMENT) in graph.edges
-
-    async def test_depth_bound_is_respected(self, mcp):
-        graph = await build_ml_lineage(mcp, MODEL, max_depth=1)
-        assert set(graph.upstream) == {FEATURE}
-        assert RAW not in graph.upstream
-
-    async def test_node_bound_marks_truncated(self, mcp):
-        graph = await build_ml_lineage(mcp, MODEL, max_nodes=1)
-        assert graph.truncated
-
-    async def test_cycle_does_not_hang(self):
-        # A ↔ B lineage loop must terminate via the visited set.
-        a, b = dataset_urn("hive", "a"), dataset_urn("hive", "b")
-        mcp = FakeMCP(upstream={a: [_entity(b)], b: [_entity(a)]}, downstream={})
-        graph = await build_ml_lineage(mcp, a, max_depth=10)
-        assert set(graph.upstream) == {b}
-
-    async def test_failing_branch_does_not_kill_the_walk(self):
-        class PartlyBroken(FakeMCP):
-            async def call(self, name: str, arguments: dict | None = None) -> Any:
-                if (arguments or {}).get("urn") == FEATURE:
-                    raise RuntimeError("GMS timeout on this branch")
-                return await super().call(name, arguments)
-
-        mcp = PartlyBroken(
-            upstream={MODEL: [_entity(FEATURE)], FEATURE: [_entity(RAW)]},
-            downstream={MODEL: [_entity(DEPLOYMENT)]},
-        )
-        graph = await build_ml_lineage(mcp, MODEL)
-        # The feature is still recorded; only its own expansion was lost.
-        assert FEATURE in graph.upstream
-        assert DEPLOYMENT in graph.downstream
-
-    async def test_summary_is_serialisable(self, mcp):
-        graph = await build_ml_lineage(mcp, MODEL)
-        summary = graph.summary()
-        assert summary["root"] == MODEL
-        assert summary["upstream_count"] == 2
-        assert summary["downstream_count"] == 2
-        assert summary["entity_counts"]["dataset"] == 1
+        graph = await build_ml_lineage(mcp, MODEL, max_hops=4)
+        s = graph.summary()
+        assert s["root"] == MODEL
+        assert s["upstream_count"] == 2
+        assert s["downstream_count"] == 1
+        assert s["entity_counts"]["dataset"] == 1
+        assert s["entity_counts"]["dataJob"] == 1
+        assert s["max_hops"] == 4
+        assert s["truncated"] is False

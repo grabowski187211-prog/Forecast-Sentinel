@@ -20,10 +20,12 @@ setup below.
 from __future__ import annotations
 
 import json
+import os
 import shutil
 from contextlib import AsyncExitStack
 from dataclasses import dataclass, field
-from typing import Any
+from pathlib import Path
+from typing import Any, TextIO
 
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
@@ -33,6 +35,11 @@ from forecast_sentinel.config import DataHubConfig, Mode
 
 # Tools the DataHub MCP server exposes. Read tools are always present; mutation
 # tools require TOOLS_IS_MUTATION_ENABLED=true on the server.
+#
+# Verified against a live self-hosted server (DataHub 1.5.0.6), which exposed 18
+# tools. `search_documents` / `grep_documents` are absent there because the
+# server filters document tools out when the catalog holds no documents — so a
+# missing read tool is not necessarily a misconfiguration.
 READ_TOOLS = (
     "search",
     "get_entities",
@@ -43,15 +50,24 @@ READ_TOOLS = (
     "search_documents",
     "grep_documents",
 )
+
+# Every tool that mutates the catalog. This list is a safety boundary, not
+# documentation: `anthropic_tools(include_writes=False)` filters on it to keep
+# mutation tools out of the agent's hands. A tool missing here is silently
+# handed to the model, so the remove_* counterparts matter as much as the add_*
+# ones — they are what could strip ownership or domains off an entity.
 WRITE_TOOLS = (
     "add_tags",
     "remove_tags",
-    "update_description",
     "add_terms",
     "remove_terms",
     "add_owners",
+    "remove_owners",
     "set_domains",
+    "remove_domains",
+    "update_description",
     "add_structured_properties",
+    "remove_structured_properties",
     "save_document",
 )
 
@@ -78,9 +94,17 @@ class ToolInventory:
 class DataHubMCP:
     """Async context manager owning the MCP session for one sentinel run."""
 
-    def __init__(self, config: DataHubConfig) -> None:
+    def __init__(self, config: DataHubConfig, *, server_log: Path | None = None) -> None:
+        """
+        server_log: where the stdio MCP server's stderr goes. The DataHub MCP
+            server logs every GraphQL query at DEBUG, which floods the terminal
+            and buries the sentinel's own output. Routing it to a file keeps it
+            available for debugging without making the CLI unreadable. `None`
+            discards it.
+        """
         config.validate()
         self._config = config
+        self._server_log = server_log
         self._session: ClientSession | None = None
         self._stack: AsyncExitStack | None = None
         self._inventory = ToolInventory()
@@ -94,6 +118,13 @@ class DataHubMCP:
     @property
     def inventory(self) -> ToolInventory:
         return self._inventory
+
+    def _open_server_log(self) -> TextIO:
+        """Open the sink for the MCP server subprocess's stderr."""
+        if self._server_log is None:
+            return open(os.devnull, "w")  # noqa: SIM115 - closed by the exit stack
+        self._server_log.parent.mkdir(parents=True, exist_ok=True)
+        return open(self._server_log, "a", encoding="utf-8")  # noqa: SIM115 - ditto
 
     async def __aenter__(self) -> DataHubMCP:
         stack = AsyncExitStack()
@@ -110,7 +141,10 @@ class DataHubMCP:
                     args=["mcp-server-datahub@latest"],
                     env=self._config.mcp_server_env(),
                 )
-                read, write = await stack.enter_async_context(stdio_client(params))
+                errlog = stack.enter_context(self._open_server_log())
+                read, write = await stack.enter_async_context(
+                    stdio_client(params, errlog=errlog)
+                )
             else:
                 streams = await stack.enter_async_context(
                     streamablehttp_client(

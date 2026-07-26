@@ -19,9 +19,11 @@ htmlcov/
 *.pat
 *.token
 
-# Sentinel runtime state
-.sentinel/baselines/*.json
-.sentinel/runs/
+# Sentinel runtime state — baselines, reports, PIDs, and the MCP server log.
+# The server log contains every GraphQL query the MCP server issued, which on a
+# real catalog means asset names and descriptions. Ignore the directory whole
+# rather than enumerating parts of it.
+.sentinel/
 out/
 
 # Local drafts — text destined for the Devpost form, not for the repo
