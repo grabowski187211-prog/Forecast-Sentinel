@@ -1,0 +1,69 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "forecast-sentinel"
+version = "0.1.0"
+description = "An agent that guards production ML models using DataHub's end-to-end ML lineage."
+readme = "README.md"
+license = { file = "LICENSE" }
+authors = [{ name = "Jan-Philipp Grabowski" }]
+keywords = ["datahub", "mcp", "ml-lineage", "data-quality", "agent", "claude"]
+# acryl-datahub and the MCP server do not yet publish wheels for 3.13+.
+requires-python = ">=3.10,<3.13"
+classifiers = [
+  "License :: OSI Approved :: Apache Software License",
+  "Programming Language :: Python :: 3.11",
+  "Programming Language :: Python :: 3.12",
+]
+dependencies = [
+  "anthropic[mcp]>=0.116.0",
+  # Pinned to the 1.x client API (ClientSession + stdio_client /
+  # streamablehttp_client). 2.x replaces it with a higher-level `Client`.
+  "mcp>=1.8,<2",
+  "pydantic>=2.7",
+  "typer>=0.12",
+  "rich>=13.7",
+  "jinja2>=3.1",
+  "python-dotenv>=1.0",
+  "httpx>=0.27",
+]
+
+[project.optional-dependencies]
+# Only needed to run `datahub docker quickstart` / load datapacks from this venv.
+# You can equally install the DataHub CLI globally via Homebrew.
+cli = ["acryl-datahub>=1.0.0"]
+dev = [
+  "pytest>=8.2",
+  "pytest-asyncio>=0.23",
+  "ruff>=0.5",
+]
+
+[project.scripts]
+sentinel = "forecast_sentinel.cli:app"
+
+[project.urls]
+Homepage = "https://inphronesys.com"
+Repository = "https://github.com/jpgrabowski/forecast-model-sentinel"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/forecast_sentinel"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "UP", "B", "SIM"]
+ignore = [
+  # StrEnum and datetime.UTC are 3.11+; this package supports 3.10.
+  "UP042",
+  "UP017",
+  # typer.Option()/Argument() in defaults is the framework's intended API.
+  "B008",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "auto"

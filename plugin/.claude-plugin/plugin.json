@@ -1,0 +1,9 @@
+{
+  "name": "forecast-sentinel",
+  "version": "0.1.0",
+  "description": "Guard production ML models against silent invalidation using DataHub's end-to-end ML lineage.",
+  "author": "Jan-Philipp Grabowski",
+  "homepage": "https://inphronesys.com",
+  "license": "Apache-2.0",
+  "keywords": ["datahub", "ml-lineage", "mlops", "data-quality", "mcp"]
+}

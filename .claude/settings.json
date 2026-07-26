@@ -1,0 +1,25 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(.venv/bin/pytest*)",
+      "Bash(.venv/bin/ruff*)",
+      "Bash(.venv/bin/sentinel*)",
+      "Bash(.venv/bin/python*)",
+      "Bash(uv pip*)",
+      "Bash(uv venv*)",
+      "Bash(datahub docker quickstart*)",
+      "Bash(datahub docker check*)",
+      "Bash(datahub version*)",
+      "Bash(datahub init*)",
+      "Bash(datahub datapack*)",
+      "Bash(git status*)",
+      "Bash(git diff*)",
+      "Bash(git log*)",
+      "Bash(gh pr view*)"
+    ],
+    "deny": [
+      "Bash(datahub docker nuke*)",
+      "Read(./.env)"
+    ]
+  }
+}
