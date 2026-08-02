@@ -100,6 +100,7 @@ def test_openai_is_primary_and_anthropic_is_retained_as_fallback(tmp_path):
     agent = _config(tmp_path).agent
     assert agent.provider is AgentProvider.AUTO
     assert agent.openai_model == "gpt-5.6"
+    assert agent.gemini_model == "gemini-3.6-flash"
     assert agent.anthropic_model == "claude-opus-5"
 
 
@@ -108,6 +109,7 @@ def test_provider_specific_model_environment_is_loaded(tmp_path, monkeypatch):
     monkeypatch.setenv("DATAHUB_GMS_URL", "http://localhost:8080")
     monkeypatch.setenv("SENTINEL_PROVIDER", "openai")
     monkeypatch.setenv("SENTINEL_OPENAI_MODEL", "gpt-test")
+    monkeypatch.setenv("SENTINEL_GEMINI_MODEL", "gemini-test")
     monkeypatch.setenv("SENTINEL_ANTHROPIC_MODEL", "claude-test")
     monkeypatch.delenv("SENTINEL_MODEL", raising=False)
 
@@ -115,6 +117,7 @@ def test_provider_specific_model_environment_is_loaded(tmp_path, monkeypatch):
 
     assert config.agent.provider is AgentProvider.OPENAI
     assert config.agent.openai_model == "gpt-test"
+    assert config.agent.gemini_model == "gemini-test"
     assert config.agent.anthropic_model == "claude-test"
 
 
@@ -204,6 +207,113 @@ async def test_openai_responses_loop_executes_local_tools_and_emits_typed_verdic
             "output": json.dumps({"urn": MODEL, "name": "demand-forecast-v3"}),
         }
     ]
+
+
+class FakeGeminiCompletions:
+    def __init__(self) -> None:
+        self.requests: list[dict[str, Any]] = []
+
+    async def create(self, **request):
+        self.requests.append(request)
+        if len(self.requests) == 1:
+            message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-search",
+                        "type": "function",
+                        "function": {
+                            "name": "search",
+                            "arguments": json.dumps({"query": MODEL}),
+                        },
+                    }
+                ],
+            }
+            usage = SimpleNamespace(prompt_tokens=10, completion_tokens=2)
+        else:
+            message = {
+                "role": "assistant",
+                "content": None,
+                "tool_calls": [
+                    {
+                        "id": "call-verdict",
+                        "type": "function",
+                        "function": {
+                            "name": "emit_verdict",
+                            "arguments": json.dumps(
+                                {
+                                    "decision": "BLOCK",
+                                    "headline": "The deployed model is invalidated.",
+                                    "reasoning": "The changed input type breaks its encoder.",
+                                    "recommended_actions": ["Retrain the model."],
+                                }
+                            ),
+                        },
+                    }
+                ],
+            }
+            usage = SimpleNamespace(prompt_tokens=4, completion_tokens=3)
+        return SimpleNamespace(
+            choices=[SimpleNamespace(message=message)],
+            usage=usage,
+        )
+
+
+class FakeGeminiClient:
+    def __init__(self) -> None:
+        self.chat = SimpleNamespace(completions=FakeGeminiCompletions())
+
+
+async def test_gemini_chat_loop_reuses_read_only_tools_and_emits_typed_verdict(tmp_path):
+    client = FakeGeminiClient()
+    sentinel = Sentinel(_config(tmp_path), gemini=client)  # type: ignore[arg-type]
+    mcp = ReadOnlyMCP()
+
+    verdict, usage = await sentinel._judge_gemini(mcp, _run(), "Assess the model.")
+
+    assert verdict is not None
+    assert verdict.decision is Decision.BLOCK
+    assert usage == {"input_tokens": 14, "output_tokens": 5}
+    assert mcp.calls == [("search", {"query": MODEL})]
+    first_request = client.chat.completions.requests[0]
+    assert first_request["model"] == "gemini-3.6-flash"
+    assert first_request["max_tokens"] == 8_000
+    assert {tool["function"]["name"] for tool in first_request["tools"]} == {
+        "search",
+        "emit_verdict",
+    }
+    continuation = client.chat.completions.requests[1]["messages"]
+    assert {
+        "role": "tool",
+        "tool_call_id": "call-search",
+        "content": json.dumps({"urn": MODEL, "name": "demand-forecast-v3"}),
+    } in continuation
+
+
+async def test_explicit_gemini_mode_does_not_attempt_paid_providers(tmp_path, monkeypatch):
+    base = _config(tmp_path)
+    config = SentinelConfig(
+        datahub=base.datahub,
+        agent=AgentConfig(provider=AgentProvider.GEMINI),
+        state_dir=base.state_dir,
+    )
+    sentinel = Sentinel(config, gemini=object())  # type: ignore[arg-type]
+    attempted: list[str] = []
+
+    async def pass_gemini(*args, **kwargs):
+        attempted.append("gemini")
+        return _verdict(Decision.WARN), {"input_tokens": 8, "output_tokens": 2}
+
+    monkeypatch.setattr(sentinel, "_judge_gemini", pass_gemini)
+
+    run = _run()
+    verdict = await sentinel._judge(object(), run, allow_writes=False)  # type: ignore[arg-type]
+
+    assert verdict is not None
+    assert verdict.decision is Decision.WARN
+    assert attempted == ["gemini"]
+    assert "Judgement provider: Gemini" in run.notes[0]
 
 
 async def test_openai_failure_retries_with_anthropic_fallback(tmp_path, monkeypatch):

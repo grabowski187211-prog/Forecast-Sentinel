@@ -15,6 +15,7 @@ Flow for `Sentinel.check(model_urn)`:
 from __future__ import annotations
 
 import json
+import os
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from typing import Any
@@ -47,6 +48,7 @@ SENTINEL_TAG = "urn:li:tag:sentinel-reviewed"
 BLOCK_TAG = "urn:li:tag:model-invalidated"
 WARN_TAG = "urn:li:tag:model-needs-review"
 STATUS_TAGS = (SENTINEL_TAG, BLOCK_TAG, WARN_TAG)
+GEMINI_OPENAI_BASE_URL = "https://generativelanguage.googleapis.com/v1beta/openai/"
 
 _OPENAI_VERDICT_TOOL: dict[str, Any] = {
     "type": "function",
@@ -148,12 +150,14 @@ class Sentinel:
         config: SentinelConfig,
         *,
         openai: AsyncOpenAI | None = None,
+        gemini: AsyncOpenAI | None = None,
         anthropic: AsyncAnthropic | None = None,
     ) -> None:
         self._config = config
         # Clients are lazy so baseline-only commands do not require model
         # credentials. Injection keeps both provider loops independently testable.
         self._openai = openai
+        self._gemini = gemini
         self._anthropic = anthropic
         self._store = SnapshotStore(config.baseline_dir)
         self._server_log = config.mcp_server_log
@@ -252,11 +256,12 @@ class Sentinel:
     ) -> Verdict | None:
         """Prefer OpenAI and retry with Anthropic when that path cannot judge."""
         user_turn = _build_judgement_prompt(run, allow_writes=allow_writes)
-        providers = (
-            [AgentProvider.ANTHROPIC]
-            if self._config.agent.provider is AgentProvider.ANTHROPIC
-            else [AgentProvider.OPENAI, AgentProvider.ANTHROPIC]
-        )
+        if self._config.agent.provider is AgentProvider.ANTHROPIC:
+            providers = [AgentProvider.ANTHROPIC]
+        elif self._config.agent.provider is AgentProvider.GEMINI:
+            providers = [AgentProvider.GEMINI]
+        else:
+            providers = [AgentProvider.OPENAI, AgentProvider.ANTHROPIC]
         failures: list[str] = []
         completed_without_verdict = False
         total_usage = {"input_tokens": 0, "output_tokens": 0}
@@ -266,6 +271,9 @@ class Sentinel:
                 if provider is AgentProvider.OPENAI:
                     verdict, usage = await self._judge_openai(mcp, run, user_turn)
                     model = self._config.agent.openai_model
+                elif provider is AgentProvider.GEMINI:
+                    verdict, usage = await self._judge_gemini(mcp, run, user_turn)
+                    model = self._config.agent.gemini_model
                 else:
                     verdict, usage = await self._judge_anthropic(mcp, run, user_turn)
                     model = self._config.agent.anthropic_model
@@ -394,6 +402,101 @@ class Sentinel:
 
             raise AgentExecutionError(
                 f"OpenAI exceeded {self._config.agent.max_iterations} tool iterations",
+                usage=usage,
+            )
+        finally:
+            if owns_client:
+                await client.close()
+
+    async def _judge_gemini(
+        self, mcp: DataHubMCP, run: SentinelRun, user_turn: str
+    ) -> tuple[Verdict | None, dict[str, int]]:
+        """Run Gemini's free-tier tool loop through its OpenAI-compatible API."""
+        client = self._gemini
+        owns_client = client is None
+        if client is None:
+            api_key = os.getenv("GEMINI_API_KEY")
+            if not api_key:
+                raise AgentExecutionError(
+                    "Gemini client unavailable: set GEMINI_API_KEY from Google AI Studio"
+                )
+            client = AsyncOpenAI(api_key=api_key, base_url=GEMINI_OPENAI_BASE_URL)
+
+        captured: dict[str, Verdict] = {}
+        tools = _chat_completion_tools(
+            [*mcp.openai_tools(include_writes=False), _OPENAI_VERDICT_TOOL]
+        )
+        messages: list[dict[str, Any]] = [
+            {"role": "system", "content": SYSTEM_PROMPT},
+            {"role": "user", "content": user_turn},
+        ]
+        usage = {"input_tokens": 0, "output_tokens": 0}
+
+        try:
+            for _ in range(self._config.agent.max_iterations):
+                try:
+                    response = await client.chat.completions.create(
+                        model=self._config.agent.gemini_model,
+                        messages=messages,
+                        tools=tools,
+                        tool_choice="auto",
+                        reasoning_effort=self._config.agent.effort,
+                        max_tokens=self._config.agent.max_tokens,
+                    )
+                except Exception as exc:  # noqa: BLE001 - normalize provider failures
+                    raise AgentExecutionError(
+                        f"Gemini OpenAI-compatible API failed: {exc}", usage=usage
+                    ) from exc
+
+                _merge_usage(usage, _chat_completion_usage(response))
+                choices = _field(response, "choices", []) or []
+                if not choices:
+                    raise AgentExecutionError(
+                        "Gemini returned no chat-completion choices", usage=usage
+                    )
+                message = _field(choices[0], "message")
+                if message is None:
+                    raise AgentExecutionError(
+                        "Gemini returned a choice without a message", usage=usage
+                    )
+                messages.append(_chat_message_payload(message))
+                tool_calls = _field(message, "tool_calls", []) or []
+                if not tool_calls:
+                    return captured.get("verdict"), usage
+
+                for call in tool_calls:
+                    call_id = str(_field(call, "id", ""))
+                    function = _field(call, "function", {}) or {}
+                    name = str(_field(function, "name", ""))
+                    arguments, parse_error = _parse_tool_arguments(
+                        _field(function, "arguments", "{}")
+                    )
+                    if parse_error:
+                        output = parse_error
+                    elif name == "emit_verdict":
+                        output = _capture_verdict(run, captured, arguments)
+                    elif name in WRITE_TOOLS:
+                        output = f"Tool call rejected: {name} is a mutation tool."
+                    elif name not in mcp.inventory.names:
+                        output = f"Tool call rejected: unknown DataHub tool {name!r}."
+                    else:
+                        try:
+                            output = _render_tool_output(await mcp.call(name, arguments))
+                        except Exception as exc:  # noqa: BLE001 - return read failure to model
+                            output = f"DataHub tool {name!r} failed: {exc}"
+                    messages.append(
+                        {
+                            "role": "tool",
+                            "tool_call_id": call_id,
+                            "content": output,
+                        }
+                    )
+
+                if "verdict" in captured:
+                    return captured["verdict"], usage
+
+            raise AgentExecutionError(
+                f"Gemini exceeded {self._config.agent.max_iterations} tool iterations",
                 usage=usage,
             )
         finally:
@@ -657,13 +760,74 @@ def _response_usage(response: Any) -> dict[str, int]:
     }
 
 
+def _chat_completion_tools(tools: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """Convert Responses API function schemas to Chat Completions schemas."""
+    converted = []
+    for tool in tools:
+        converted.append(
+            {
+                "type": "function",
+                "function": {
+                    "name": tool["name"],
+                    "description": tool.get("description", ""),
+                    "parameters": tool.get("parameters")
+                    or {"type": "object", "properties": {}},
+                },
+            }
+        )
+    return converted
+
+
+def _chat_message_payload(message: Any) -> dict[str, Any]:
+    """Preserve provider-specific tool-call metadata when continuing a chat."""
+    if isinstance(message, dict):
+        return dict(message)
+    if hasattr(message, "model_dump"):
+        return message.model_dump(mode="json", exclude_none=True)
+
+    payload: dict[str, Any] = {
+        "role": _field(message, "role", "assistant"),
+        "content": _field(message, "content"),
+    }
+    tool_calls = _field(message, "tool_calls", []) or []
+    if tool_calls:
+        payload["tool_calls"] = [
+            {
+                "id": _field(call, "id", ""),
+                "type": _field(call, "type", "function"),
+                "function": {
+                    "name": _field(_field(call, "function", {}), "name", ""),
+                    "arguments": _field(
+                        _field(call, "function", {}), "arguments", "{}"
+                    ),
+                },
+            }
+            for call in tool_calls
+        ]
+    return payload
+
+
+def _chat_completion_usage(response: Any) -> dict[str, int]:
+    usage = _field(response, "usage")
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": int(_field(usage, "prompt_tokens", 0) or 0),
+        "output_tokens": int(_field(usage, "completion_tokens", 0) or 0),
+    }
+
+
 def _merge_usage(total: dict[str, int], addition: dict[str, int]) -> None:
     total["input_tokens"] += addition.get("input_tokens", 0)
     total["output_tokens"] += addition.get("output_tokens", 0)
 
 
 def _provider_label(provider: AgentProvider) -> str:
-    return "OpenAI" if provider is AgentProvider.OPENAI else "Anthropic"
+    return {
+        AgentProvider.OPENAI: "OpenAI",
+        AgentProvider.GEMINI: "Gemini",
+        AgentProvider.ANTHROPIC: "Anthropic",
+    }.get(provider, provider.value)
 
 
 # --- rendering helpers -------------------------------------------------------

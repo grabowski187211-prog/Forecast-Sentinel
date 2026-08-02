@@ -64,11 +64,14 @@ Never read or commit `.env`. Runtime baselines, reports, PIDs, and MCP logs in
 - `Verdict` in `agent/schemas.py` is the contract shared by CI, terminal/HTML
   reports, JSON output, and DataHub write-back.
 - Keep the default non-streaming output budget at 8,000 tokens or below unless
-  both provider runners are migrated to streaming; the Anthropic SDK rejects
+  all provider runners are migrated to streaming; the Anthropic SDK rejects
   longer estimated requests before sending them.
 - OpenAI is primary in `auto` mode and Anthropic is the fallback. Both receive
   only their `*_tools(include_writes=False)` adapter plus the local
   `emit_verdict` tool. Keep `WRITE_TOOLS` as their shared safety boundary.
+- Explicit `gemini` mode uses Google's OpenAI-compatible Chat Completions API,
+  the same `openai_tools(include_writes=False)` adapter, and no paid-provider
+  fallback. Keep free-tier catalog inputs synthetic or non-sensitive.
 - Provider fallback must remain inside the read-only judgement phase. Catalog
   writes happen once, after a valid verdict, so retrying another provider is
   side-effect safe.
@@ -88,12 +91,12 @@ Never read or commit `.env`. Runtime baselines, reports, PIDs, and MCP logs in
   scripts or external assets.
 - `README.md` is the main judge-facing document; `docs/BUILD_LOG.md` does not
   exist here, so git history and `docs/SUBMISSION.md` are the evidence trail.
-- The README terminal transcript is illustrative until real JSON, HTML, and
-  terminal output are committed under `examples/`.
-- A prior live DataHub 1.5.0.6 run verified lineage, baseline capture, and the
-  deterministic dtype drift. A typed synthetic verdict has also proved all four
-  write-back mutations live. Do not claim either full model-judgement path is
-  live-verified until an authenticated run produces the verdict.
+- The README terminal transcript must stay synchronized with the checked-in
+  JSON, HTML, and terminal output under `examples/`.
+- A live DataHub 1.5.0.6 run with `gemini-3.6-flash` verified the full path:
+  lineage, baseline, deterministic dtype drift, typed `BLOCK`, and all four
+  write-back mutations. Do not claim the OpenAI or Anthropic judgement paths
+  are live-verified until an authenticated run proves each one.
 - Keep `README.md`, `docs/SETUP.md`, `docs/ARCHITECTURE.md`,
   `docs/SUBMISSION.md`, and the ignored `docs/DEVPOST_STORY.md` consistent with
   the implemented and verified state.

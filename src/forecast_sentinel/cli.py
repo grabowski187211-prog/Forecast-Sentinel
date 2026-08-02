@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import asyncio
 import json
+import os
 from pathlib import Path
 
 import typer
@@ -92,6 +93,7 @@ def doctor(
     table.add_row("writes requested", "yes" if dh.mutation_enabled else "no")
     table.add_row("provider", config.agent.provider.value)
     table.add_row("OpenAI model", config.agent.openai_model)
+    table.add_row("Gemini model", config.agent.gemini_model)
     table.add_row("Anthropic fallback", config.agent.anthropic_model)
     table.add_row("effort", config.agent.effort)
     table.add_row("state dir", str(config.state_dir))
@@ -124,17 +126,40 @@ def doctor(
             if openai_ready:
                 role = (
                     "available (not selected)"
-                    if config.agent.provider is AgentProvider.ANTHROPIC
+                    if config.agent.provider
+                    in {AgentProvider.ANTHROPIC, AgentProvider.GEMINI}
                     else "available — primary provider"
                 )
                 console.print(f"[green]OpenAI credentials {role}.[/]")
-            elif config.agent.provider is AgentProvider.ANTHROPIC:
-                console.print("[dim]OpenAI credentials not required in Anthropic mode.[/]")
+            elif config.agent.provider in {
+                AgentProvider.ANTHROPIC,
+                AgentProvider.GEMINI,
+            }:
+                console.print(
+                    f"[dim]OpenAI credentials not required in "
+                    f"{config.agent.provider.value} mode.[/]"
+                )
             else:
                 console.print(
                     "[yellow]No OpenAI credentials.[/] Set OPENAI_API_KEY; "
                     "Anthropic will be tried as the fallback."
                 )
+
+            gemini_ready = bool(os.getenv("GEMINI_API_KEY"))
+            if gemini_ready:
+                role = (
+                    "selected provider"
+                    if config.agent.provider is AgentProvider.GEMINI
+                    else "available (not selected)"
+                )
+                console.print(f"[green]Gemini credentials available — {role}.[/]")
+            elif config.agent.provider is AgentProvider.GEMINI:
+                console.print(
+                    "[yellow]No Gemini credentials.[/] Create a free key in Google "
+                    "AI Studio and set GEMINI_API_KEY."
+                )
+            else:
+                console.print("[dim]Gemini credentials not configured.[/]")
 
             anthropic_client = AsyncAnthropic()
             try:
@@ -152,7 +177,9 @@ def doctor(
                     else "fallback available"
                 )
                 console.print(f"[green]Anthropic credentials available — {role}.[/]")
-            elif openai_ready and config.agent.provider is not AgentProvider.ANTHROPIC:
+            elif (
+                openai_ready or gemini_ready
+            ) and config.agent.provider is not AgentProvider.ANTHROPIC:
                 console.print("[dim]Anthropic fallback credentials not configured.[/]")
             else:
                 console.print(

@@ -1,0 +1,41 @@
+$ sentinel check 'urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)' --json examples/verdict_block.json
+
+BLOCK — mlflow:demand-forecast-v3 [PROD]
+Model demand-forecast-v3 is invalid due to an unhandled data type breaking
+change (INT to VARCHAR) in upstream feature source
+sales.raw_sales.holiday_flag.
+
+lineage: 3 upstream, 1 downstream, max hops 4
+
+Upstream changes (1)
+HIGH  holiday_flag: dtype INT -> VARCHAR
+      urn:li:dataset:(urn:li:dataPlatform:snowflake,sales.raw_sales,PROD)
+
+Risks
+  HIGH Upstream Feature Encoding Mismatch on holiday_flag
+    path: Data type mismatch (INT -> VARCHAR) breaks assumptions in feature
+    generation and model inference. Replacing numeric integer flags with holiday
+    string names prevents proper feature encoding learned by the gradient-boosted
+    model, leading to pipeline runtime errors or model invalidation.
+
+Recommended actions
+  1. Halt automated inference/training jobs ('train_demand_forecast') for
+     demand-forecast-v3 until schema compatibility is restored.
+  2. Update the feature engineering pipeline feeding 'sales.feat_seasonality'
+     to parse/encode string values in 'sales.raw_sales.holiday_flag' into numeric
+     binary/categorical features.
+  3. Retrain and evaluate 'demand-forecast-v3' on the updated feature encoding
+     before redeploying to production.
+
+Written back to DataHub
+  OK remove_tags — cleared obsolete sentinel status tags
+  OK add_tags — tagged urn:li:tag:model-invalidated
+  OK update_description — appended verdict status to the description
+  OK save_document — saved full findings document linked to the model
+
+note: Judgement provider: Gemini (gemini-3.6-flash).
+
+HTML report: .sentinel/runs/sentinel_mlflow_demand-forecast-v3__PROD_.html
+JSON: examples/verdict_block.json
+
+BLOCK verdict — failing with exit code 2.

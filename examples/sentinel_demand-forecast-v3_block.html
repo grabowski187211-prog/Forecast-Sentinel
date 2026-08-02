@@ -1,0 +1,209 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sentinel — mlflow:demand-forecast-v3 [PROD]</title>
+<style>
+  :root {
+    --bg: #fbfaf8; --panel: #ffffff; --ink: #1c1b19; --muted: #6b6862;
+    --line: #e3dfd8; --accent: #7c5cff;
+    --ok: #2f7d51; --warn: #a86400; --block: #b3261e; --unknown: #5a5a5a;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #17161a; --panel: #1f1e24; --ink: #ecebe8; --muted: #9b978f;
+      --line: #322f38; --accent: #a58cff;
+      --ok: #6fd39b; --warn: #f0b429; --block: #ff6b60; --unknown: #a0a0a0;
+    }
+  }
+  * { box-sizing: border-box; }
+  body {
+    margin: 0; padding: 2rem 1.25rem 4rem;
+    background: var(--bg); color: var(--ink);
+    font: 16px/1.6 ui-sans-serif, -apple-system, "Segoe UI", system-ui, sans-serif;
+  }
+  main { max-width: 62rem; margin: 0 auto; }
+  header { border-bottom: 1px solid var(--line); padding-bottom: 1.25rem; margin-bottom: 2rem; }
+  .eyebrow {
+    text-transform: uppercase; letter-spacing: .12em; font-size: .72rem;
+    color: var(--muted); margin: 0 0 .4rem;
+  }
+  h1 { font-size: 1.7rem; margin: 0 0 .75rem; line-height: 1.25; }
+  h2 { font-size: 1.15rem; margin: 2.25rem 0 .85rem; }
+  h3 { font-size: .98rem; margin: 1.25rem 0 .4rem; }
+  code, .urn {
+    font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+    font-size: .82em; word-break: break-all;
+  }
+  .verdict {
+    display: inline-flex; align-items: baseline; gap: .5rem;
+    font-weight: 650; font-size: .82rem; letter-spacing: .06em;
+    padding: .3rem .7rem; border-radius: 999px; border: 1px solid currentColor;
+  }
+  .v-OK { color: var(--ok); } .v-WARN { color: var(--warn); }
+  .v-BLOCK { color: var(--block); } .v-UNKNOWN { color: var(--unknown); }
+  .headline { font-size: 1.12rem; margin: 1.25rem 0 0; }
+  .meta { display: flex; flex-wrap: wrap; gap: .4rem 1.5rem; margin-top: 1rem;
+          color: var(--muted); font-size: .84rem; }
+  .panel {
+    background: var(--panel); border: 1px solid var(--line);
+    border-radius: .6rem; padding: 1rem 1.15rem; margin: .85rem 0;
+  }
+  .tiles { display: grid; gap: .75rem; grid-template-columns: repeat(auto-fit, minmax(9rem, 1fr)); }
+  .tile { background: var(--panel); border: 1px solid var(--line);
+          border-radius: .6rem; padding: .85rem 1rem; }
+  .tile .n { font-size: 1.5rem; font-weight: 650; }
+  .tile .k { color: var(--muted); font-size: .76rem; text-transform: uppercase;
+             letter-spacing: .08em; }
+  .risk { border-left: 3px solid var(--line); padding-left: .9rem; margin: 1.1rem 0; }
+  .risk.critical, .risk.high { border-left-color: var(--block); }
+  .risk.medium { border-left-color: var(--warn); }
+  .risk.low { border-left-color: var(--muted); }
+  .sev { font-size: .7rem; font-weight: 650; letter-spacing: .08em;
+         text-transform: uppercase; color: var(--muted); }
+  .path { color: var(--muted); font-size: .86rem; margin: .3rem 0; }
+  ul, ol { margin: .5rem 0; padding-left: 1.35rem; }
+  li { margin: .25rem 0; }
+  .scroll { overflow-x: auto; }
+  table { border-collapse: collapse; width: 100%; font-size: .88rem; min-width: 34rem; }
+  th, td { text-align: left; padding: .5rem .65rem; border-bottom: 1px solid var(--line); }
+  th { color: var(--muted); font-weight: 600; font-size: .75rem;
+       text-transform: uppercase; letter-spacing: .07em; }
+  .pill { font-size: .68rem; font-weight: 650; text-transform: uppercase;
+          letter-spacing: .06em; padding: .12rem .45rem; border-radius: .3rem;
+          border: 1px solid currentColor; }
+  .p-high { color: var(--block); } .p-medium { color: var(--warn); }
+  .p-low { color: var(--muted); }
+  .muted { color: var(--muted); }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--line);
+           color: var(--muted); font-size: .8rem; }
+</style>
+</head>
+<body>
+<main>
+  <header>
+    <p class="eyebrow">Forecast Model Sentinel</p>
+    <h1>mlflow:demand-forecast-v3 [PROD]</h1>
+    <span class="verdict v-BLOCK">BLOCK</span>
+
+      <span class="muted" style="font-size:.82rem">confidence: high</span>
+
+    <p class="headline">Model demand-forecast-v3 is invalid due to an unhandled data type breaking change (INT to VARCHAR) in upstream feature source sales.raw_sales.holiday_flag.</p>
+    <div class="meta">
+      <span class="urn">urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)</span>
+      <span>checked 2026-08-02T21:02:48+00:00</span>
+
+        <span>baseline 2026-08-02T20:41:19+00:00</span>
+
+    </div>
+  </header>
+
+  <div class="tiles">
+    <div class="tile">
+      <div class="n">3</div><div class="k">Upstream assets</div>
+    </div>
+    <div class="tile">
+      <div class="n">1</div><div class="k">Blast radius</div>
+    </div>
+    <div class="tile">
+      <div class="n">1</div><div class="k">Schema changes</div>
+    </div>
+    <div class="tile">
+      <div class="n">1</div>
+      <div class="k">Risks</div>
+    </div>
+  </div>
+
+
+    <h2>Assessment</h2>
+    <div class="panel">The model &#39;demand-forecast-v3&#39; relies on feature table &#39;sales.feat_seasonality&#39;, which feeds into training job &#39;train_demand_forecast&#39;. The schema for &#39;sales.feat_seasonality.holiday_flag&#39; is expected as INT (&#39;passed through from raw_sales; encoded at training time&#39;). Upstream dataset &#39;sales.raw_sales.holiday_flag&#39; was updated from INT to VARCHAR (now storing string holiday names or empty strings). This schema change breaks feature ingestion and encoding: string values cannot be passed directly as integer flags to the trained gradient-boosted model without explicit string-to-numeric encoding, and pipeline execution will fail on type casting or produce invalid predictions.</div>
+
+
+      <h2>Risks</h2>
+
+        <div class="risk high">
+          <div class="sev">high</div>
+          <h3>Upstream Feature Encoding Mismatch on holiday_flag</h3>
+          <p class="path">Path: Data type mismatch (INT -&gt; VARCHAR) breaks assumptions in feature generation and model inference. Replacing numeric integer flags with holiday string names prevents proper feature encoding learned by the gradient-boosted model, leading to pipeline runtime errors or model invalidation.</p>
+          <p class="path urn">urn:li:dataset:(urn:li:dataPlatform:snowflake,sales.raw_sales,PROD)</p>
+
+            <ul><li>sales.raw_sales.holiday_flag nativeDataType is VARCHAR with description &#39;Holiday name, or empty string when not a holiday.&#39;</li><li>sales.feat_seasonality.holiday_flag nativeDataType is INT with description &#39;Passed through from raw_sales; encoded at training time.&#39;</li><li>Lineage path connects sales.raw_sales -&gt; sales.feat_seasonality -&gt; train_demand_forecast -&gt; demand-forecast-v3</li></ul>
+
+        </div>
+
+
+
+
+      <h2>Recommended actions</h2>
+      <ol><li>Halt automated inference/training jobs (&#39;train_demand_forecast&#39;) for demand-forecast-v3 until schema compatibility is restored.</li><li>Update the feature engineering pipeline feeding &#39;sales.feat_seasonality&#39; to parse/encode string values in &#39;sales.raw_sales.holiday_flag&#39; into numeric binary/categorical features.</li><li>Retrain and evaluate &#39;demand-forecast-v3&#39; on the updated feature encoding before redeploying to production.</li></ol>
+
+
+
+      <h2>Downstream at risk</h2>
+      <ul><li class="urn">urn:li:mlModelGroup:(urn:li:dataPlatform:mlflow,demand-forecast,PROD)</li></ul>
+
+
+
+
+
+
+    <h2>Detected upstream changes</h2>
+    <div class="scroll">
+      <table>
+        <thead><tr><th>Severity</th><th>Change</th><th>Dataset</th></tr></thead>
+        <tbody>
+
+          <tr>
+            <td><span class="pill p-high">high</span></td>
+            <td>holiday_flag: dtype INT -&gt; VARCHAR</td>
+            <td class="urn">urn:li:dataset:(urn:li:dataPlatform:snowflake,sales.raw_sales,PROD)</td>
+          </tr>
+
+        </tbody>
+      </table>
+    </div>
+
+
+
+    <h2>Written back to DataHub</h2>
+    <ul>
+
+        <li>
+          <code>remove_tags</code> — cleared obsolete sentinel status tags
+
+        </li>
+
+        <li>
+          <code>add_tags</code> — tagged urn:li:tag:model-invalidated
+
+        </li>
+
+        <li>
+          <code>update_description</code> — appended verdict status to the description
+
+        </li>
+
+        <li>
+          <code>save_document</code> — saved full findings document linked to the model
+
+        </li>
+
+    </ul>
+
+
+
+    <h2>Notes</h2>
+    <ul class="muted"><li>Judgement provider: Gemini (gemini-3.6-flash).</li></ul>
+
+
+  <footer>
+    Generated by Forecast Model Sentinel.
+
+      Model usage: 155215 in /
+      1253 out.
+
+  </footer>
+</main>
+</body>
+</html>

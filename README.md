@@ -32,40 +32,42 @@ deployed model depends on it". DataHub is the one system that holds that link.
 
 It answers the question no dashboard currently answers: **this upstream thing
 changed — is my deployed model still valid?** The terminal transcript below is
-illustrative until a checked-in live run replaces it in `examples/`.
+from the checked-in Gemini free-tier run on 2026-08-02. Its
+[JSON verdict](examples/verdict_block.json),
+[HTML report](examples/sentinel_demand-forecast-v3_block.html), and
+[terminal transcript](examples/terminal_block.txt) are published in `examples/`.
 
 ```
-$ sentinel check "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)"
+$ sentinel check "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)" --json examples/verdict_block.json
 
-╭─ BLOCK — demand-forecast-v3 ─────────────────────────────────────────────────╮
-│ holiday_flag changed from int to string in the model's primary training       │
-│ input; the deployed artefact's learned encoding no longer matches inference   │
-│ data, so predictions are silently wrong.                                      │
-╰──────────────────────────────────────────────────────────────────────────────╯
-lineage: 14 upstream, 6 downstream, max hops 4
+BLOCK — mlflow:demand-forecast-v3 [PROD]
+Model demand-forecast-v3 is invalid due to an unhandled data type breaking
+change (INT to VARCHAR) in upstream feature source
+sales.raw_sales.holiday_flag.
 
-Upstream changes (2)
-┏━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┳━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┓
-┃ sev    ┃ change                            ┃ dataset                        ┃
-┡━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━╇━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━┩
-│ high   │ holiday_flag: dtype INT -> VARCHAR │ urn:li:dataset:(…,raw_sales,…) │
-│ low    │ promo_id: added (BIGINT)           │ urn:li:dataset:(…,raw_sales,…) │
-└────────┴───────────────────────────────────┴────────────────────────────────┘
+lineage: 3 upstream, 1 downstream, max hops 4
+
+Upstream changes (1)
+HIGH  holiday_flag: dtype INT -> VARCHAR
+      urn:li:dataset:(urn:li:dataPlatform:snowflake,sales.raw_sales,PROD)
 
 Risks
-  HIGH  Feature encoding mismatch on holiday_flag
-    path: raw_sales.holiday_flag → feat_seasonality → demand-forecast-v3
+  HIGH Upstream Feature Encoding Mismatch on holiday_flag
+    path: raw_sales → feat_seasonality → train_demand_forecast
+          → demand-forecast-v3
 
 Recommended actions
-  1. Stop the nightly batch scoring job before the next 02:00 run.
-  2. Pin feat_seasonality to the previous dtype, or retrain on the new encoding.
-  3. Notify the owners of exec_demand_dashboard — last 3 days of figures suspect.
+  1. Halt automated inference/training jobs until compatibility is restored.
+  2. Encode holiday_flag strings into numeric binary/categorical features.
+  3. Retrain and evaluate demand-forecast-v3 before redeploying.
 
 Written back to DataHub
   ✓ remove_tags — cleared obsolete sentinel status tags
   ✓ add_tags — tagged urn:li:tag:model-invalidated
   ✓ update_description — appended verdict status to the description
   ✓ save_document — saved full findings document linked to the model
+
+note: Judgement provider: Gemini (gemini-3.6-flash).
 
 BLOCK verdict — failing with exit code 2.
 ```
@@ -90,7 +92,7 @@ The design splits the problem in two, because the halves need different tools.
                                         baseline           │
      └─────────────────────────────────────┬───────────────┘
                                            │  facts, not opinions
-     ┌────── agentic (OpenAI, Anthropic fallback) ─▼───────┐
+     ┌── agentic (OpenAI | Gemini free tier | Anthropic) ─▼┐
      │  Verify the lineage paths that matter               │
      │  (get_lineage_paths_between, get_dataset_queries)   │
      │  Judge consequence per change                       │
@@ -111,10 +113,11 @@ the only part the model is asked to do.
 
 The agent never detects drift. It is handed the facts and asked what they mean.
 
-OpenAI's Responses API is the primary judgement path. The same read-only tools
-and typed `emit_verdict` contract are available through the Anthropic tool
-runner as a fallback. Provider failure can therefore be retried without
-duplicating catalog mutations: all writes remain outside the model loop.
+OpenAI's Responses API is the primary judgement path in `auto` mode, with
+Anthropic as its fallback. An explicit Gemini path uses Google's
+OpenAI-compatible Chat Completions endpoint and the same read-only tools and
+typed `emit_verdict` contract. Provider failure can therefore be retried without
+duplicating catalog mutations: all writes remain outside every model loop.
 
 **Evidence discipline.** Every risk must cite the lineage path it travels and
 facts retrieved from DataHub in that session. Anything the agent asserted but
@@ -219,8 +222,9 @@ All configuration is environment-based; see [`.env.example`](.env.example).
 | `DATAHUB_GMS_URL` / `DATAHUB_GMS_TOKEN` | Self-hosted GMS endpoint and PAT |
 | `DATAHUB_TENANT_URL` / `DATAHUB_TOKEN` | Cloud tenant and PAT |
 | `TOOLS_IS_MUTATION_ENABLED` | Gates the MCP server's write tools |
-| `SENTINEL_PROVIDER` | `auto` (OpenAI then Anthropic), `openai`, or `anthropic` |
+| `SENTINEL_PROVIDER` | `auto` (OpenAI then Anthropic), `openai`, `gemini`, or `anthropic` |
 | `OPENAI_API_KEY` / `SENTINEL_OPENAI_MODEL` | Primary provider credentials and model |
+| `GEMINI_API_KEY` / `SENTINEL_GEMINI_MODEL` | Optional zero-cost demo provider |
 | `ANTHROPIC_API_KEY` / `ANTHROPIC_AUTH_TOKEN` | Fallback credentials |
 | `SENTINEL_ANTHROPIC_MODEL` / `SENTINEL_EFFORT` | Fallback model and shared reasoning effort |
 | `SENTINEL_FAIL_ON_BLOCK` | Whether a BLOCK verdict exits non-zero |
@@ -229,7 +233,26 @@ With `SENTINEL_PROVIDER=auto` (the default), the Sentinel uses
 `OPENAI_API_KEY` first. If OpenAI is unavailable, errors, or returns no typed
 verdict, it retries through Anthropic when `ANTHROPIC_API_KEY`,
 `ANTHROPIC_AUTH_TOKEN`, or an SDK profile is available. Set the provider to
-`anthropic` to skip OpenAI. `sentinel doctor` reports both credential paths.
+`anthropic` to skip OpenAI. `sentinel doctor` reports every credential path.
+
+### Zero-cost Gemini demo
+
+Google currently lists `gemini-3.6-flash` input and output tokens as free of
+charge within its Free Tier. Create a key in
+[Google AI Studio](https://aistudio.google.com/api-keys), then configure:
+
+```dotenv
+SENTINEL_PROVIDER=gemini
+GEMINI_API_KEY=your-key
+SENTINEL_GEMINI_MODEL=gemini-3.6-flash
+```
+
+The runner reuses the installed OpenAI Python SDK through Google's documented
+[OpenAI-compatible endpoint](https://ai.google.dev/gemini-api/docs/openai), so
+no extra package is required. Free-tier requests are rate-limited, and Google
+states that free-tier content may be used to improve its products. The bundled
+demo contains synthetic catalog metadata; do not send private production
+metadata through this path without reviewing the applicable terms.
 
 ## Project layout
 
@@ -261,8 +284,8 @@ pytest
 
 The deterministic half and provider orchestration are unit-tested without a
 live DataHub: URN parsing, schema-payload normalisation, drift diffing, the
-OpenAI function-call continuation loop, Anthropic fallback, and the shared
-read-only tool boundary.
+OpenAI Responses continuation loop, Gemini Chat Completions tool loop,
+Anthropic fallback, and the shared read-only tool boundary.
 
 ## Design notes and limitations
 

@@ -7,12 +7,12 @@ Deadline: **2026-08-10, 5:00 PM EDT**. Requirements digested in
 
 | Item | Status |
 |---|---|
-| Working project using DataHub (MCP Server) | Built — deterministic path and all writes live-verified; authenticated model judgement pending |
+| Working project using DataHub (MCP Server) | Done — authenticated Gemini run live-verified detection, judgement, and all writes |
 | Public repository with source + setup instructions | Done — public `grabowski187211-prog/Forecast-Sentinel` repository |
 | Apache 2.0 licence, detectable at repo root | Done — `LICENSE` |
 | Text description of features and functionality | Done — `README.md` |
 | Demo video, <3 min, public, YouTube/Vimeo/Youku | **Not yet recorded** |
-| Sample outputs in `examples/` | Placeholder — needs real run output |
+| Sample outputs in `examples/` | Done — JSON, static HTML, and terminal transcript from the live run |
 
 ## Before recording anything
 
@@ -24,11 +24,10 @@ Current verification:
 - [x] `seed_ml_demo.py --dry-run` constructs every entity against the real SDK
 - [x] Live DataHub 1.5.0.6: 3 upstream / 1 downstream assets, both schemas captured, deliberate `INT → VARCHAR` drift detected
 - [x] Live write-back smoke test: obsolete tags removed, `model-invalidated` added, status appended, linked `Analysis` document saved
-- [ ] **Fresh full run:** real OpenAI verdict pending `OPENAI_API_KEY`
+- [x] Fresh full run: `gemini-3.6-flash` emitted a typed `BLOCK`; all four writes succeeded
 
-That last item is the recording gate. Do not present the illustrative README
-transcript as real output until the fresh run has produced the checked-in JSON,
-HTML, and terminal transcript.
+The recording gate is clear. The checked-in JSON, HTML, and terminal transcript
+under `examples/` are the evidence source for the README and video.
 
 ```bash
 # start Docker/Colima and then:
@@ -40,10 +39,8 @@ python scripts/seed_ml_demo.py --break-schema
 sentinel check "$MODEL" --json examples/verdict_block.json
 ```
 
-Then replace the placeholder in `examples/` with the real output, and confirm the
-README's sample terminal output matches what actually happens. **If it does not,
-fix the README** — an aspirational README that does not match real output is the
-fastest way to lose the submission-quality criterion.
+The README sample now matches the checked-in run. Keep it synchronized if a
+later recording run produces different lineage counts or wording.
 
 ## Video plan (<3 min)
 
@@ -68,7 +65,7 @@ Six equally-weighted criteria:
 | Criterion | Confidence | Gap |
 |---|---|---|
 | Use of DataHub | Strong | 9 tools, read **and** write, both deployment shapes |
-| Technical execution | Strong | Tests, bounded traversal, dual-provider fallback, CI exit codes, live writes — pending an authenticated model run |
+| Technical execution | Strong | Gemini full path live-verified; OpenAI/Anthropic paths contract-tested; bounded traversal, typed verdict, CI exit codes |
 | Originality | Good | Write-back and the deterministic/agentic split are the distinctive parts |
 | Real-world usefulness | Strong | Silent invalidation is a real, expensive, common failure |
 | Submission quality | Pending | Entirely dependent on the video |

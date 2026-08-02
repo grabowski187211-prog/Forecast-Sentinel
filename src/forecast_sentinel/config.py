@@ -29,6 +29,7 @@ class AgentProvider(str, Enum):
 
     AUTO = "auto"
     OPENAI = "openai"
+    GEMINI = "gemini"
     ANTHROPIC = "anthropic"
 
 
@@ -87,9 +88,10 @@ class DataHubConfig:
 class AgentConfig:
     provider: AgentProvider = AgentProvider.AUTO
     openai_model: str = "gpt-5.6"
+    gemini_model: str = "gemini-3.6-flash"
     anthropic_model: str = "claude-opus-5"
     effort: str = "high"
-    # Both provider paths use bounded non-streaming responses. A structured
+    # All provider paths use bounded non-streaming responses. A structured
     # verdict and its read-only tool calls fit comfortably within this budget.
     max_tokens: int = 8_000
     max_iterations: int = 40
@@ -146,7 +148,8 @@ class SentinelConfig:
             provider = AgentProvider(raw_provider)
         except ValueError as exc:
             raise ConfigError(
-                "SENTINEL_PROVIDER must be 'auto', 'openai', or 'anthropic', "
+                "SENTINEL_PROVIDER must be 'auto', 'openai', 'gemini', or "
+                "'anthropic', "
                 f"got {raw_provider!r}"
             ) from exc
 
@@ -168,6 +171,9 @@ class SentinelConfig:
                 _clean(os.getenv("SENTINEL_OPENAI_MODEL"))
                 or legacy_openai
                 or "gpt-5.6"
+            ),
+            gemini_model=(
+                _clean(os.getenv("SENTINEL_GEMINI_MODEL")) or "gemini-3.6-flash"
             ),
             anthropic_model=(
                 _clean(os.getenv("SENTINEL_ANTHROPIC_MODEL"))

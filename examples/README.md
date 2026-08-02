@@ -1,25 +1,22 @@
 # Sample outputs
 
-The hackathon rules recommend including sample outputs. **These are placeholders
-until an end-to-end run against a live DataHub has happened** — see
-[`../docs/SUBMISSION.md`](../docs/SUBMISSION.md).
+These are genuine outputs from the authenticated Gemini free-tier run against
+the local DataHub 1.5.0.6 demo on 2026-08-02 — see
+[`../docs/SUBMISSION.md`](../docs/SUBMISSION.md) for the remaining submission
+work.
 
-Do not treat anything here as evidence of a complete agent run. The verified
-claims today are: the local tests and lint pass, the seeder constructs every
-entity, and a prior live DataHub run confirmed lineage, baseline capture, and
-deterministic schema-drift detection. Authenticated model judgement (OpenAI
-primary, Anthropic fallback) and catalog write-back still need fresh checked-in
-output; the four mutation schemas have separately passed a live typed-verdict
-smoke test.
+The run detected `holiday_flag: INT → VARCHAR`, received a typed `BLOCK` verdict
+from `gemini-3.6-flash`, and completed status-tag cleanup, invalidation tagging,
+description append, and linked-document save through DataHub MCP. The JSON
+records zero unverified claims.
 
-## What will land here
+## Checked-in outputs
 
 | File | Produced by |
 |---|---|
-| `verdict_block.json` | `sentinel check "$MODEL" --json examples/verdict_block.json` after `--break-schema` |
-| `verdict_ok.json` | Same command with the schema intact |
-| `sentinel_demand-forecast-v3.html` | Copied from `.sentinel/runs/` after a check |
-| `terminal_block.txt` | `sentinel check "$MODEL" | tee examples/terminal_block.txt` |
+| `verdict_block.json` | Structured run, drift, verdict, write-backs, notes, and usage |
+| `sentinel_demand-forecast-v3_block.html` | Static self-contained report copied from `.sentinel/runs/` |
+| `terminal_block.txt` | Clean transcript of the blocking run |
 
 ## Regenerating
 
@@ -27,12 +24,12 @@ smoke test.
 ./scripts/bootstrap_datahub.sh
 MODEL='urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)'
 
+python scripts/seed_ml_demo.py
 sentinel baseline "$MODEL"
-sentinel check "$MODEL" --json examples/verdict_ok.json
-
 python scripts/seed_ml_demo.py --break-schema
 sentinel check "$MODEL" --json examples/verdict_block.json
-cp .sentinel/runs/*.html examples/
+cp .sentinel/runs/sentinel_mlflow_demand-forecast-v3__PROD_.html \
+  examples/sentinel_demand-forecast-v3_block.html
 ```
 
 ## Before committing anything here

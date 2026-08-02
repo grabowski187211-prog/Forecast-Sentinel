@@ -1,0 +1,99 @@
+{
+  "model_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)",
+  "model_label": "mlflow:demand-forecast-v3 [PROD]",
+  "started_at": "2026-08-02T21:02:48+00:00",
+  "decision": "BLOCK",
+  "baseline_created": false,
+  "baseline_captured_at": "2026-08-02T20:41:19+00:00",
+  "lineage": {
+    "root": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)",
+    "upstream_count": 3,
+    "downstream_count": 1,
+    "entity_counts": {
+      "dataJob": 1,
+      "dataset": 2,
+      "mlModelGroup": 1
+    },
+    "max_hops": 4,
+    "truncated": false,
+    "owners": [],
+    "errors": []
+  },
+  "drift": [
+    {
+      "dataset_urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,sales.raw_sales,PROD)",
+      "field_path": "holiday_flag",
+      "kind": "type_changed",
+      "severity": "high",
+      "before": "INT",
+      "after": "VARCHAR",
+      "description": "holiday_flag: dtype INT -> VARCHAR"
+    }
+  ],
+  "verdict": {
+    "model_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)",
+    "decision": "BLOCK",
+    "headline": "Model demand-forecast-v3 is invalid due to an unhandled data type breaking change (INT to VARCHAR) in upstream feature source sales.raw_sales.holiday_flag.",
+    "reasoning": "The model 'demand-forecast-v3' relies on feature table 'sales.feat_seasonality', which feeds into training job 'train_demand_forecast'. The schema for 'sales.feat_seasonality.holiday_flag' is expected as INT ('passed through from raw_sales; encoded at training time'). Upstream dataset 'sales.raw_sales.holiday_flag' was updated from INT to VARCHAR (now storing string holiday names or empty strings). This schema change breaks feature ingestion and encoding: string values cannot be passed directly as integer flags to the trained gradient-boosted model without explicit string-to-numeric encoding, and pipeline execution will fail on type casting or produce invalid predictions.",
+    "risks": [
+      {
+        "title": "Upstream Feature Encoding Mismatch on holiday_flag",
+        "severity": "high",
+        "affected_urn": "urn:li:dataset:(urn:li:dataPlatform:snowflake,sales.raw_sales,PROD)",
+        "mechanism": "Data type mismatch (INT -> VARCHAR) breaks assumptions in feature generation and model inference. Replacing numeric integer flags with holiday string names prevents proper feature encoding learned by the gradient-boosted model, leading to pipeline runtime errors or model invalidation.",
+        "evidence": [
+          "sales.raw_sales.holiday_flag nativeDataType is VARCHAR with description 'Holiday name, or empty string when not a holiday.'",
+          "sales.feat_seasonality.holiday_flag nativeDataType is INT with description 'Passed through from raw_sales; encoded at training time.'",
+          "Lineage path connects sales.raw_sales -> sales.feat_seasonality -> train_demand_forecast -> demand-forecast-v3"
+        ]
+      }
+    ],
+    "recommended_actions": [
+      "Halt automated inference/training jobs ('train_demand_forecast') for demand-forecast-v3 until schema compatibility is restored.",
+      "Update the feature engineering pipeline feeding 'sales.feat_seasonality' to parse/encode string values in 'sales.raw_sales.holiday_flag' into numeric binary/categorical features.",
+      "Retrain and evaluate 'demand-forecast-v3' on the updated feature encoding before redeploying to production."
+    ],
+    "downstream_at_risk": [
+      "urn:li:mlModelGroup:(urn:li:dataPlatform:mlflow,demand-forecast,PROD)"
+    ],
+    "confidence": "high",
+    "unverified_claims": []
+  },
+  "write_backs": [
+    {
+      "tool": "remove_tags",
+      "target_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)",
+      "detail": "cleared obsolete sentinel status tags",
+      "succeeded": true,
+      "error": null
+    },
+    {
+      "tool": "add_tags",
+      "target_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)",
+      "detail": "tagged urn:li:tag:model-invalidated",
+      "succeeded": true,
+      "error": null
+    },
+    {
+      "tool": "update_description",
+      "target_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)",
+      "detail": "appended verdict status to the description",
+      "succeeded": true,
+      "error": null
+    },
+    {
+      "tool": "save_document",
+      "target_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)",
+      "detail": "saved full findings document linked to the model",
+      "succeeded": true,
+      "error": null
+    }
+  ],
+  "notes": [
+    "Judgement provider: Gemini (gemini-3.6-flash)."
+  ],
+  "token_usage": {
+    "input_tokens": 155215,
+    "output_tokens": 1253
+  }
+}

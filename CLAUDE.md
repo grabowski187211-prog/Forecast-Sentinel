@@ -55,8 +55,9 @@ The work is split in two, and the split is the design:
   changed*. Pure Python: bounded server-side `get_lineage` traversal plus a schema diff
   against a recorded baseline. Reproducible, no model involved.
 - **Agentic half** (`agent/`) answers *does it matter*. OpenAI is primary and
-  Anthropic is the fallback; both reason over DataHub's real MCP tools about
-  whether a dtype change breaks a specific trained artefact.
+  Anthropic is the `auto` fallback; an explicit Gemini free-tier path uses the
+  same read-only tools and typed verdict contract. Each reasons over DataHub's
+  real MCP tools about whether a dtype change breaks a trained artefact.
 
 **Do not move drift detection into the agent.** A diff is not a judgement call;
 making it one costs money and makes the answer vary between runs. Conversely, do
@@ -87,12 +88,13 @@ URN, which embeds a `dataPlatform` URN. `split(",")` corrupts all of them; use
 `datahub.urns.parse_urn`, which tracks parenthesis depth. Key arity also varies
 by entity type, so `Urn.parts` stays positional rather than assuming a shape.
 
-**The agent gets read tools only.** `mcp.openai_tools(include_writes=False)` and
-`mcp.anthropic_tools(include_writes=False)` share the same `WRITE_TOOLS` safety
-boundary. Write-back happens afterwards in `_record_verdict`, in code, from the
-structured verdict. The model decides *what* to record, not how many catalog
-objects to touch. Keep it that way; fallback is safe only while this remains
-true.
+**The agent gets read tools only.** OpenAI and Gemini use
+`mcp.openai_tools(include_writes=False)`; Anthropic uses
+`mcp.anthropic_tools(include_writes=False)`. Both adapters share the same
+`WRITE_TOOLS` safety boundary. Write-back happens afterwards in
+`_record_verdict`, in code, from the structured verdict. The model decides
+*what* to record, not how many catalog objects to touch. Keep it that way;
+fallback is safe only while this remains true.
 
 **Writes are double-gated.** The MCP server hides mutation tools unless
 `TOOLS_IS_MUTATION_ENABLED=true`, and `DataHubMCP.inventory.has_write_access`
@@ -140,11 +142,9 @@ third-party signatures checked against installed packages, seeder dry-run
 constructs every entity, and a prior live DataHub 1.5.0.6 run confirmed lineage
 and schema drift detection.
 
-Verified separately against live DataHub: all four catalog write-back mutations
-(status-tag cleanup/addition, description append, linked document save).
-
-**Still to verify:** a fresh authenticated model judgement. OpenAI is the
-primary path (`OPENAI_API_KEY`); Anthropic remains available through
-`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an SDK profile. Treat the sample
-terminal output in `README.md` as illustrative until checked-in output from that
-run replaces it.
+Verified end to end against live DataHub: the explicit Gemini free-tier path
+detected the `INT → VARCHAR` drift, emitted a typed `BLOCK` with zero unverified
+claims, and completed status-tag cleanup/addition, description append, and
+linked-document save. JSON, static HTML, and terminal evidence are checked in
+under `examples/`. OpenAI remains the primary `auto` path and Anthropic its
+fallback; neither paid-provider judgement path is claimed as live-verified.

@@ -7,7 +7,7 @@ The work splits into two halves with different tools:
 | | Deterministic half | Agentic half |
 |---|---|---|
 | Question | *What changed?* | *Does it matter?* |
-| Implementation | Python: BFS + schema diff | OpenAI, with Anthropic fallback + DataHub MCP tools |
+| Implementation | Python: BFS + schema diff | OpenAI/Anthropic or explicit Gemini free tier + DataHub MCP tools |
 | Properties | Reproducible, free, fast | Reasoned, cited, judged |
 | Files | `snapshots.py`, `datahub/ml_lineage.py` | `agent/` |
 
@@ -41,8 +41,9 @@ sentinel check <model-urn>
   │
   ├─ Sentinel._judge(...)               AGENTIC
   │    ├─ OpenAI Responses function-tool loop (primary)
-  │    └─ Anthropic MCP tool runner (fallback)
-  │       both receive DataHub read tools + the same emit_verdict contract
+  │    ├─ Gemini Chat Completions loop (explicit free-tier mode)
+  │    └─ Anthropic MCP tool runner (auto fallback)
+  │       all receive DataHub read tools + the same emit_verdict contract
   │       agent verifies paths, judges consequence, calls emit_verdict once
   │
   ├─ Sentinel._record_verdict(...)      write-back
@@ -56,11 +57,11 @@ sentinel check <model-urn>
 
 ```
 config.py            One config object covering both deployment shapes.
-                     Selects OpenAI primary / Anthropic fallback independently.
+                     Selects auto, OpenAI, Gemini, or Anthropic independently.
 
 datahub/
   mcp_client.py      Owns the MCP session. Two transports, one interface.
-                     Adapts read tools to both providers and probes availability.
+                     Adapts read tools to every provider and probes availability.
   urns.py            URN parsing. Depth-aware comma splitting; positional parts.
   ml_lineage.py      Bounded BFS. Tolerant payload parsing.
 
@@ -104,18 +105,25 @@ collected and surfaced as a `SnapshotCaptureError`; no partial baseline is saved
 snapshotting and lineage traversal can hit MCP tools without a model in the loop.
 The agent reaches the same tools through the tool runner.
 
-**Read tools only, in the agent loop.** Both
-`openai_tools(include_writes=False)` and
-`anthropic_tools(include_writes=False)` filter through the same `WRITE_TOOLS`
-safety boundary. Write-back happens after the verdict, in code, from structured
-fields. The model decides *what* to record; it does not get to decide *how many*
-catalog objects to touch.
+**Read tools only, in the agent loop.** The OpenAI and Gemini loops use
+`openai_tools(include_writes=False)`; the Anthropic loop uses
+`anthropic_tools(include_writes=False)`. Both adapters filter through the same
+`WRITE_TOOLS` safety boundary. Write-back happens after the verdict, in code,
+from structured fields. The model decides *what* to record; it does not get to
+decide *how many* catalog objects to touch.
 
 **Provider fallback is side-effect safe.** OpenAI is attempted first in `auto`
 mode. If its API call fails or it ends without a valid typed verdict, the same
 evidence is retried through Anthropic. Because model-visible tools are read-only,
 the retry cannot duplicate a tag, description, or document write. Token usage is
 aggregated and the provider that produced the verdict is recorded in run notes.
+
+**The free provider is explicit, not an accidental fallback.** Selecting
+`SENTINEL_PROVIDER=gemini` routes only to Gemini's OpenAI-compatible API. It does
+not retry a paid provider. `auto` remains OpenAI first and Anthropic second, so
+the original production contract is unchanged. Gemini receives the same local
+read-only tools and typed verdict schema; catalog mutations still run once in
+the orchestrator.
 
 **Write-back follows the live MCP schemas.** The orchestrator removes obsolete
 Sentinel status tags, adds the current one, appends a timestamped status to the

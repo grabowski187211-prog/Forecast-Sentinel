@@ -7,7 +7,8 @@
 | Python 3.10–3.12 | `acryl-datahub` and the MCP server lack 3.13+ wheels | `python3 --version` |
 | [uv](https://docs.astral.sh/uv/) | venv + `uvx` runs the MCP server | `uv --version` |
 | Docker | Only for a **local** DataHub | `docker info` |
-| OpenAI API key | Primary agent path | `$OPENAI_API_KEY` |
+| Gemini API key | Free-tier demo path | `$GEMINI_API_KEY` |
+| OpenAI API key | Primary `auto` path | `$OPENAI_API_KEY` |
 | Anthropic credentials | Optional fallback | `$ANTHROPIC_API_KEY`, `$ANTHROPIC_AUTH_TOKEN`, or an SDK profile |
 
 Docker needs ≥2 CPUs, 8GB RAM, 2GB swap and 13GB free disk allocated to it. If
@@ -59,6 +60,25 @@ report — `sentinel doctor` will tell you so.
 
 ### Model provider
 
+For a zero-cost demo, create a key in
+[Google AI Studio](https://aistudio.google.com/api-keys). Google currently
+lists `gemini-3.6-flash` input and output tokens as free of charge within its
+Free Tier:
+
+```ini
+SENTINEL_PROVIDER=gemini
+GEMINI_API_KEY=<gemini-api-key>
+SENTINEL_GEMINI_MODEL=gemini-3.6-flash
+SENTINEL_EFFORT=high
+```
+
+The Gemini runner uses Google's documented
+[OpenAI-compatible endpoint](https://ai.google.dev/gemini-api/docs/openai) and
+requires no additional Python package. Free-tier limits vary by project and
+model. Google states that free-tier content may be used to improve its products,
+so use the synthetic demo catalog—not private production metadata—unless you
+have reviewed and accepted that boundary.
+
 The default `auto` mode prefers OpenAI and retries with Anthropic if the OpenAI
 request fails or does not emit a valid verdict:
 
@@ -74,9 +94,10 @@ SENTINEL_ANTHROPIC_MODEL=claude-opus-5
 SENTINEL_EFFORT=high
 ```
 
-Set `SENTINEL_PROVIDER=anthropic` to skip OpenAI. The old `SENTINEL_MODEL`
-variable remains compatible: Claude model names are routed to Anthropic and
-other model names to OpenAI, but the provider-specific names are clearer.
+Set `SENTINEL_PROVIDER=gemini` for the isolated free-tier path or
+`SENTINEL_PROVIDER=anthropic` to skip OpenAI. The old `SENTINEL_MODEL` variable
+remains compatible: Claude model names are routed to Anthropic and other model
+names to OpenAI, but the provider-specific names are clearer.
 
 ## 3. Bring up a local DataHub (self-hosted only)
 
@@ -122,7 +143,7 @@ sentinel doctor
 ```
 
 Expected: the configuration table, then `Connected. N MCP tools exposed.` plus
-the write-tool state and separate OpenAI/Anthropic credential checks.
+the write-tool state and separate OpenAI/Gemini/Anthropic credential checks.
 
 ## 5. Run the demo
 
@@ -166,10 +187,14 @@ decide. Check `sentinel check --json out.json` and read the agent's
 **`No OpenAI credentials`** — set `OPENAI_API_KEY` in `.env`. In `auto` mode the
 Sentinel will otherwise try Anthropic as the fallback.
 
-**`No Anthropic credentials`** — this is acceptable when OpenAI is configured.
-To enable fallback, set `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, or
-configure an SDK profile. DataHub connectivity alone is sufficient for `models`
-and `baseline`; `check` and `watch` need at least one model provider.
+**`No Gemini credentials`** — create a free key in Google AI Studio, set
+`GEMINI_API_KEY`, and select `SENTINEL_PROVIDER=gemini`.
+
+**`No Anthropic credentials`** — this is acceptable when OpenAI or Gemini is
+configured. To enable the `auto` fallback, set `ANTHROPIC_API_KEY` or
+`ANTHROPIC_AUTH_TOKEN`, or configure an SDK profile. DataHub connectivity alone
+is sufficient for `models` and `baseline`; `check` and `watch` need at least one
+model provider.
 
 **Python 3.13+ resolution errors** — create the venv with
 `uv venv --python 3.12`. `acryl-datahub` does not publish 3.13 wheels yet.
