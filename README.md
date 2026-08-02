@@ -6,6 +6,16 @@ Built for [Build with DataHub: The Agent Hackathon](https://datahub.devpost.com)
 
 ---
 
+## The case in 30 seconds
+
+The [self-contained case-study dashboard](examples/forecast-sentinel-case-study.html)
+turns the verified run into one guided story: the quiet schema change, the
+lineage evidence, the agent's judgement, the controlled write-back, and the
+limits of what was proved. It is designed to stand alone for judges and to serve
+as the visual spine of the demo video.
+
+[![Forecast Sentinel case-study dashboard showing a high-confidence BLOCK verdict for an INT-to-VARCHAR feature drift](examples/forecast-sentinel-case-study.png)](examples/forecast-sentinel-case-study.html)
+
 ## The problem
 
 A demand-forecasting model goes into production. Six weeks later, an upstream

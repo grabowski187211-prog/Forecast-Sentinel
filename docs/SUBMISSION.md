@@ -12,7 +12,7 @@ Deadline: **2026-08-10, 5:00 PM EDT**. Requirements digested in
 | Apache 2.0 licence, detectable at repo root | Done — `LICENSE` |
 | Text description of features and functionality | Done — `README.md` |
 | Demo video, <3 min, public, YouTube/Vimeo/Youku | **Not yet recorded** |
-| Sample outputs in `examples/` | Done — JSON, static HTML, and terminal transcript from the live run |
+| Sample outputs in `examples/` | Done — case-study dashboard plus JSON, static report, and terminal transcript from the live run |
 
 ## Before recording anything
 
@@ -26,8 +26,9 @@ Current verification:
 - [x] Live write-back smoke test: obsolete tags removed, `model-invalidated` added, status appended, linked `Analysis` document saved
 - [x] Fresh full run: `gemini-3.6-flash` emitted a typed `BLOCK`; all four writes succeeded
 
-The recording gate is clear. The checked-in JSON, HTML, and terminal transcript
-under `examples/` are the evidence source for the README and video.
+The recording gate is clear. Use the case-study dashboard as the video's visual
+spine; its claims trace to the checked-in JSON, run report, and terminal
+transcript under `examples/`.
 
 ```bash
 # start Docker/Colima and then:
@@ -48,12 +49,12 @@ Equal weighting means the video is worth as much as the code. Structure:
 
 | Time | Beat |
 |---|---|
-| 0:00–0:25 | **The problem, concretely.** Show `raw_sales.holiday_flag` as INT in the DataHub UI, a healthy model, a green dashboard. State that a dtype change here breaks the forecast and nothing alerts. |
+| 0:00–0:25 | **The problem, concretely.** Open the case-study dashboard on “Everything was green. The forecast was not.” State that the endpoint and table remain healthy while `holiday_flag` breaks the model's feature contract. |
 | 0:25–0:45 | Flip the schema. Show that DataHub records the change but nothing connects it to the model. Monitoring is green. |
 | 0:45–1:45 | `sentinel check`. Let the agent's tool calls scroll — this is the DataHub integration, visible. Land on the BLOCK verdict, the lineage path, the recommended actions, exit code 2. |
 | 1:45–2:15 | Refresh the DataHub UI: the model now carries `model-invalidated`, the description shows the verdict, the findings document is attached. **This is the differentiator** — most entries only read. |
-| 2:15–2:40 | The HTML report, and one line on the CI gate. |
-| 2:40–2:55 | One sentence on the deterministic/agentic split and why it matters. |
+| 2:15–2:40 | Return to the dashboard's evidence path and proof links; show the HTML report and mention the CI gate. |
+| 2:40–2:55 | Close on the dashboard's deterministic Python → read-only agent → controlled write-back boundary. |
 
 Record the terminal at a legible font size. Do not narrate the architecture
 before showing the failure — lead with the problem.
