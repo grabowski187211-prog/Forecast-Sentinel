@@ -9,7 +9,7 @@ description = "An agent that guards production ML models using DataHub's end-to-
 readme = "README.md"
 license = { file = "LICENSE" }
 authors = [{ name = "Jan-Philipp Grabowski" }]
-keywords = ["datahub", "mcp", "ml-lineage", "data-quality", "agent", "claude"]
+keywords = ["datahub", "mcp", "ml-lineage", "data-quality", "agent", "openai", "claude"]
 # acryl-datahub and the MCP server do not yet publish wheels for 3.13+.
 requires-python = ">=3.10,<3.13"
 classifiers = [
@@ -19,6 +19,7 @@ classifiers = [
 ]
 dependencies = [
   "anthropic[mcp]>=0.116.0",
+  "openai>=2.48.0",
   # Pinned to the 1.x client API (ClientSession + stdio_client /
   # streamablehttp_client). 2.x replaces it with a higher-level `Client`.
   "mcp>=1.8,<2",
@@ -45,7 +46,7 @@ sentinel = "forecast_sentinel.cli:app"
 
 [project.urls]
 Homepage = "https://inphronesys.com"
-Repository = "https://github.com/jpgrabowski/forecast-model-sentinel"
+Repository = "https://github.com/grabowski187211-prog/Forecast-Sentinel"
 
 [tool.hatch.build.targets.wheel]
 packages = ["src/forecast_sentinel"]

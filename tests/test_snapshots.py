@@ -7,12 +7,16 @@ is a correctness requirement, not a nicety.
 
 from __future__ import annotations
 
+import pytest
+
 from forecast_sentinel.datahub.urns import dataset_urn, ml_model_urn
 from forecast_sentinel.snapshots import (
     DriftKind,
     FieldSpec,
     Snapshot,
+    SnapshotCaptureError,
     SnapshotStore,
+    capture_snapshot,
     diff_snapshots,
     parse_schema_fields,
 )
@@ -170,3 +174,25 @@ class TestSnapshotStore:
         written = list(tmp_path.glob("*.json"))
         assert len(written) == 1
         assert "/" not in written[0].name and "(" not in written[0].name
+
+
+class TestCaptureSnapshot:
+    async def test_schema_read_failure_aborts_instead_of_looking_like_no_drift(self):
+        class PartiallyBrokenMCP:
+            async def call(self, name, arguments=None):
+                assert name == "list_schema_fields"
+                raise RuntimeError("GMS timeout")
+
+        with pytest.raises(SnapshotCaptureError, match="GMS timeout") as exc_info:
+            await capture_snapshot(PartiallyBrokenMCP(), MODEL, [DATASET])
+
+        assert exc_info.value.failures == {DATASET: "GMS timeout"}
+
+    async def test_successful_empty_schema_is_preserved_as_a_governance_gap(self):
+        class EmptySchemaMCP:
+            async def call(self, name, arguments=None):
+                assert name == "list_schema_fields"
+                return {"fields": []}
+
+        snapshot = await capture_snapshot(EmptySchemaMCP(), MODEL, [DATASET])
+        assert snapshot.datasets == {DATASET: []}

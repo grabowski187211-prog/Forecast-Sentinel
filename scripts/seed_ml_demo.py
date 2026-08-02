@@ -36,6 +36,8 @@ import warnings
 warnings.filterwarnings("ignore", message=".*datahub SDK.*experimental.*")
 
 try:
+    from datahub.emitter.mcp import MetadataChangeProposalWrapper
+    from datahub.metadata import schema_classes as models
     from datahub.sdk import DataHubClient
     from datahub.sdk.datajob import DataJob
     from datahub.sdk.dataset import Dataset
@@ -59,6 +61,27 @@ MODEL_GROUP_ID = "demand-forecast"
 MODEL_ID = "demand-forecast-v3"
 DEPLOYMENT_URN = (
     "urn:li:mlModelDeployment:(urn:li:dataPlatform:sagemaker,planning-api,PROD)"
+)
+
+STATUS_TAGS = (
+    (
+        "sentinel-reviewed",
+        "Sentinel Reviewed",
+        "Forecast Sentinel reviewed this model and found no blocking invalidation.",
+        "#2F7D51",
+    ),
+    (
+        "model-invalidated",
+        "Model Invalidated",
+        "Forecast Sentinel found an upstream change that invalidates this model.",
+        "#B3261E",
+    ),
+    (
+        "model-needs-review",
+        "Model Needs Review",
+        "Forecast Sentinel requires human review or more catalog evidence.",
+        "#A86400",
+    ),
 )
 
 # holiday_flag is the field the demo breaks. Everything else stays fixed so the
@@ -107,7 +130,30 @@ def upsert(client: DataHubClient | None, entity: object, label: str) -> None:
     print(f"  upserted {label}")
 
 
+def upsert_status_tags(client: DataHubClient | None) -> None:
+    """Ensure every tag used by write-back exists before the demo is checked."""
+    for tag_id, name, description, colour in STATUS_TAGS:
+        proposal = MetadataChangeProposalWrapper(
+            entityUrn=f"urn:li:tag:{tag_id}",
+            aspect=models.TagPropertiesClass(
+                name=name,
+                description=description,
+                colorHex=colour,
+            ),
+        )
+        if client is None:
+            print(f"  [dry-run] would upsert tag {tag_id}")
+        else:
+            # The experimental high-level SDK has no Tag entity yet. Its
+            # underlying graph client is the supported MCP emitter used by the
+            # rest of acryl-datahub for aspect upserts.
+            client._graph.emit_mcp(proposal)  # type: ignore[attr-defined]
+            print(f"  upserted tag {tag_id}")
+
+
 def seed(client: DataHubClient | None, *, broken: bool) -> None:
+    upsert_status_tags(client)
+
     raw = Dataset(
         platform=PLATFORM_WAREHOUSE,
         name=RAW_NAME,

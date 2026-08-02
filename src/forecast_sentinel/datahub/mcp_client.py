@@ -6,9 +6,14 @@ to know which one is live:
 * self-hosted -> `uvx mcp-server-datahub@latest` as a stdio subprocess
 * cloud       -> the tenant's streamable-HTTP MCP endpoint, bearer-authenticated
 
-The connected `ClientSession` is handed to the Anthropic tool runner via
-`anthropic.lib.tools.mcp.async_mcp_tool`, so the model calls DataHub's real
-tools (`search`, `get_lineage`, `add_tags`, ...) rather than a reimplementation.
+The connected `ClientSession` is exposed to either supported model provider:
+
+* Anthropic receives SDK-native MCP wrappers.
+* OpenAI receives local function-tool schemas; calls are executed through the
+  same session and their results are returned to the Responses API.
+
+In both cases the model calls DataHub's real tools (`search`, `get_lineage`,
+...) rather than a reimplementation.
 
 API note: this targets the `mcp` 1.x client API (`ClientSession` +
 `stdio_client` / `streamablehttp_client`), which is what `anthropic[mcp]`'s
@@ -52,10 +57,10 @@ READ_TOOLS = (
 )
 
 # Every tool that mutates the catalog. This list is a safety boundary, not
-# documentation: `anthropic_tools(include_writes=False)` filters on it to keep
-# mutation tools out of the agent's hands. A tool missing here is silently
-# handed to the model, so the remove_* counterparts matter as much as the add_*
-# ones — they are what could strip ownership or domains off an entity.
+# documentation: the provider adapters filter on it to keep mutation tools out
+# of the agent's hands. A tool missing here is silently handed to the model, so
+# the remove_* counterparts matter as much as the add_* ones — they are what
+# could strip ownership or domains off an entity.
 WRITE_TOOLS = (
     "add_tags",
     "remove_tags",
@@ -158,6 +163,13 @@ class DataHubMCP:
             session = await stack.enter_async_context(ClientSession(read, write))
             await session.initialize()
             self._session = session
+
+            listed = await session.list_tools()
+            tools = list(listed.tools or [])
+            self._inventory = ToolInventory(
+                names=tuple(tool.name for tool in tools),
+                raw=tools,
+            )
         except MCPConnectionError:
             await stack.aclose()
             self._stack = None
@@ -170,12 +182,6 @@ class DataHubMCP:
                 f"({self._config.mode.value}): {exc}"
             ) from exc
 
-        listed = await self._session.list_tools()
-        tools = list(listed.tools or [])
-        self._inventory = ToolInventory(
-            names=tuple(tool.name for tool in tools),
-            raw=tools,
-        )
         return self
 
     async def __aexit__(self, exc_type, exc, tb) -> None:
@@ -212,6 +218,33 @@ class DataHubMCP:
             if not include_writes and tool.name in WRITE_TOOLS:
                 continue
             selected.append(async_mcp_tool(tool, self.session))
+        return selected
+
+    def openai_tools(self, *, include_writes: bool = True) -> list[dict[str, Any]]:
+        """Expose MCP tools as Responses API function tools.
+
+        The OpenAI API cannot reach a local stdio MCP process directly. These
+        schemas let it request a tool call while the Sentinel executes that call
+        locally through the already-authenticated MCP session.
+        """
+        selected: list[dict[str, Any]] = []
+        for tool in self._inventory.raw:
+            if not include_writes and tool.name in WRITE_TOOLS:
+                continue
+            schema = getattr(tool, "inputSchema", None)
+            if schema is None:
+                schema = getattr(tool, "input_schema", None)
+            if hasattr(schema, "model_dump"):
+                schema = schema.model_dump(mode="json")
+            selected.append(
+                {
+                    "type": "function",
+                    "name": tool.name,
+                    "strict": False,
+                    "description": tool.description or f"Call the DataHub {tool.name} tool.",
+                    "parameters": schema or {"type": "object", "properties": {}},
+                }
+            )
         return selected
 
 

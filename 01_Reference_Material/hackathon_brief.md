@@ -94,13 +94,14 @@ invite above is the one to share.
 | Criterion | Where it is addressed |
 |---|---|
 | Use of DataHub | Nine MCP tools, read **and** write. Verdicts are persisted via `add_tags` / `update_description` / `save_document`. Both self-hosted and Cloud transports. |
-| Technical execution | Deterministic drift detection separated from agentic judgement; bounded lineage traversal; 66 unit tests over the deterministic half; exits non-zero for CI. |
+| Technical execution | Deterministic drift detection separated from agentic judgement; bounded lineage traversal; unit and orchestration-contract tests; exits non-zero for CI. |
 | Originality | Uses ML lineage to answer a question no monitoring tool answers — connecting a schema change to a *trained artefact*, not just to a table. Writes the verdict back into the catalog. |
 | Real-world usefulness | Silent model invalidation from upstream dtype changes is a real, common, expensive failure. The CI gate is the practitioner-facing form. |
-| Submission quality | README leads with the problem and shows real output; `docs/` covers architecture and setup; `examples/` holds sample outputs. |
+| Submission quality | README leads with the problem; `docs/` covers architecture and setup; `examples/` is ready for checked-in live outputs. |
 | OSS contribution bonus | Not yet addressed — see `docs/SUBMISSION.md`. |
 
 ## Open items
 
-Tracked in `docs/SUBMISSION.md`: demo video, public repo push, and a decision on
-whether to attempt the open-source-contribution bonus.
+Tracked in `docs/SUBMISSION.md`: the authenticated full agent run, demo outputs
+and video, and a decision on whether to attempt the open-source-contribution
+bonus.

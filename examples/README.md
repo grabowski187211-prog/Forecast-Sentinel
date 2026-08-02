@@ -4,9 +4,13 @@ The hackathon rules recommend including sample outputs. **These are placeholders
 until an end-to-end run against a live DataHub has happened** — see
 [`../docs/SUBMISSION.md`](../docs/SUBMISSION.md).
 
-Do not treat anything here as evidence the pipeline works. The verified claims
-today are: 66 unit tests pass over the deterministic half, and every third-party
-API call is checked against installed package signatures.
+Do not treat anything here as evidence of a complete agent run. The verified
+claims today are: the local tests and lint pass, the seeder constructs every
+entity, and a prior live DataHub run confirmed lineage, baseline capture, and
+deterministic schema-drift detection. Authenticated model judgement (OpenAI
+primary, Anthropic fallback) and catalog write-back still need fresh checked-in
+output; the four mutation schemas have separately passed a live typed-verdict
+smoke test.
 
 ## What will land here
 

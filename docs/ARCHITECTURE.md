@@ -7,7 +7,7 @@ The work splits into two halves with different tools:
 | | Deterministic half | Agentic half |
 |---|---|---|
 | Question | *What changed?* | *Does it matter?* |
-| Implementation | Python: BFS + schema diff | Claude + DataHub MCP tools |
+| Implementation | Python: BFS + schema diff | OpenAI, with Anthropic fallback + DataHub MCP tools |
 | Properties | Reproducible, free, fast | Reasoned, cited, judged |
 | Files | `snapshots.py`, `datahub/ml_lineage.py` | `agent/` |
 
@@ -30,8 +30,8 @@ sentinel check <model-urn>
   │    └─ list_tools()                  probe what this server actually exposes
   │
   ├─ build_ml_lineage(mcp, urn)         DETERMINISTIC
-  │    └─ BFS over get_lineage, both directions
-  │       bounded: max_depth=4, max_nodes=250 → sets graph.truncated
+  │    └─ one get_lineage call per direction; DataHub walks transitively
+  │       bounded: max_hops=4, max_results=200 → sets graph.truncated
   │
   ├─ capture_snapshot(mcp, urn, datasets)
   │    └─ list_schema_fields per training input
@@ -40,9 +40,9 @@ sentinel check <model-urn>
   │    severity: removed/dtype = high, nullability = medium, added = low
   │
   ├─ Sentinel._judge(...)               AGENTIC
-  │    └─ tool_runner(
-  │         tools = DataHub read tools (via async_mcp_tool) + emit_verdict,
-  │         thinking = adaptive, effort = configurable)
+  │    ├─ OpenAI Responses function-tool loop (primary)
+  │    └─ Anthropic MCP tool runner (fallback)
+  │       both receive DataHub read tools + the same emit_verdict contract
   │       agent verifies paths, judges consequence, calls emit_verdict once
   │
   ├─ Sentinel._record_verdict(...)      write-back
@@ -56,11 +56,11 @@ sentinel check <model-urn>
 
 ```
 config.py            One config object covering both deployment shapes.
-                     Nothing above datahub/mcp_client.py knows which is live.
+                     Selects OpenAI primary / Anthropic fallback independently.
 
 datahub/
   mcp_client.py      Owns the MCP session. Two transports, one interface.
-                     Probes tool availability rather than assuming it.
+                     Adapts read tools to both providers and probes availability.
   urns.py            URN parsing. Depth-aware comma splitting; positional parts.
   ml_lineage.py      Bounded BFS. Tolerant payload parsing.
 
@@ -78,12 +78,12 @@ cli.py               typer app. Exit 2 = BLOCK.
 
 ## Why the specific choices
 
-**Bounded traversal, explicitly marked.** `get_lineage` returns one hop, so the
-ML path (table → feature → model → deployment) needs a traversal. In a real
-catalog, an unbounded walk from a central table enumerates the warehouse. The
-bounds are `max_depth=4` / `max_nodes=250`, and hitting them sets
-`graph.truncated`, which is surfaced in the report. A partial blast radius
-presented as complete is worse than no blast radius.
+**Bounded traversal, explicitly marked.** DataHub's `get_lineage` performs the
+multi-hop walk server-side. In a real catalog, an unbounded walk from a central
+table enumerates the warehouse. The client requests `max_hops=4` and
+`max_results=200`; a `hasMore` response sets `graph.truncated`, which is surfaced
+in the report. A partial blast radius presented as complete is worse than no
+blast radius.
 
 **Tolerant parsers, tested.** DataHub payloads vary across versions and
 platforms: keys appear camelCase or snake_case, lineage entries as objects or
@@ -91,18 +91,37 @@ bare URN strings, owners as strings or nested dicts. The parsers accept all
 observed shapes and drop what they cannot interpret rather than raising. Every
 tolerance has a test — see `tests/test_ml_lineage.py::TestPayloadParsing`.
 
-**A failing lineage branch does not abort the walk.** One unreachable upstream
-asset should degrade the picture, not kill the check. The branch is skipped and
-the walk continues.
+**A one-direction lineage failure is visible but survivable.** If upstream or
+downstream retrieval succeeds while the other direction fails, the useful half
+is retained and the error is surfaced on the graph. Failure in both directions
+raises `LineageError`; it must never look like an empty lineage result.
+
+**A failing schema read does abort snapshotting.** A partial current snapshot
+cannot safely mean "no drift". Every failed `list_schema_fields` call is
+collected and surfaced as a `SnapshotCaptureError`; no partial baseline is saved.
 
 **Direct tool calls for the deterministic path.** `DataHubMCP.call()` exists so
 snapshotting and lineage traversal can hit MCP tools without a model in the loop.
 The agent reaches the same tools through the tool runner.
 
-**Read tools only, in the agent loop.** `anthropic_tools(include_writes=False)`
-means the model cannot mutate the catalog directly. Write-back happens after the
-verdict, in code, from structured fields. The model decides *what* to record; it
-does not get to decide *how many* catalog objects to touch.
+**Read tools only, in the agent loop.** Both
+`openai_tools(include_writes=False)` and
+`anthropic_tools(include_writes=False)` filter through the same `WRITE_TOOLS`
+safety boundary. Write-back happens after the verdict, in code, from structured
+fields. The model decides *what* to record; it does not get to decide *how many*
+catalog objects to touch.
+
+**Provider fallback is side-effect safe.** OpenAI is attempted first in `auto`
+mode. If its API call fails or it ends without a valid typed verdict, the same
+evidence is retried through Anthropic. Because model-visible tools are read-only,
+the retry cannot duplicate a tag, description, or document write. Token usage is
+aggregated and the provider that produced the verdict is recorded in run notes.
+
+**Write-back follows the live MCP schemas.** The orchestrator removes obsolete
+Sentinel status tags, adds the current one, appends a timestamped status to the
+model description, and saves an `Analysis` document with the model in
+`related_assets`. Each mutation is independently recorded as succeeded or
+failed.
 
 **A missing baseline is not drift.** The first run on a model records a baseline
 and reviews lineage *coverage* instead. Likewise, a dataset that appears in only
@@ -119,6 +138,7 @@ CLI can exit 2 and the write-back has structured fields to persist.
 |---|---|
 | A new drift signal (freshness, assertions, volume) | `snapshots.py` — emit `DriftEvent`s; the agent half needs no change |
 | A new write-back target (Slack, PagerDuty, Jira) | `Sentinel._record_verdict` |
+| A new model provider | Add a read-only tool adapter and provider loop in `Sentinel._judge` |
 | Cloud-only assertions and incidents | New MCP tool names in `mcp_client.WRITE_TOOLS` / `READ_TOOLS`; the runtime probe handles absence |
 | A different report format | `report/` — `SentinelRun.to_dict()` is the stable surface |
 

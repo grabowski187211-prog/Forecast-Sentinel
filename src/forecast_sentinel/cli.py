@@ -17,17 +17,20 @@ import json
 from pathlib import Path
 
 import typer
+from anthropic import AsyncAnthropic
+from openai import AsyncOpenAI
 from rich.console import Console
 from rich.panel import Panel
 from rich.table import Table
 
 from forecast_sentinel.agent.schemas import Decision
-from forecast_sentinel.agent.sentinel import Sentinel, SentinelRun
-from forecast_sentinel.config import ConfigError, SentinelConfig
+from forecast_sentinel.agent.sentinel import AgentExecutionError, Sentinel, SentinelRun
+from forecast_sentinel.config import AgentProvider, ConfigError, SentinelConfig
 from forecast_sentinel.datahub.mcp_client import DataHubMCP, MCPConnectionError
+from forecast_sentinel.datahub.ml_lineage import LineageError
 from forecast_sentinel.datahub.urns import UrnParseError, parse_urn
 from forecast_sentinel.report.html import write_html_report
-from forecast_sentinel.snapshots import SnapshotStore
+from forecast_sentinel.snapshots import SnapshotCaptureError, SnapshotStore
 
 app = typer.Typer(
     add_completion=False,
@@ -87,7 +90,9 @@ def doctor(
         table.add_row("MCP endpoint", dh.cloud_mcp_endpoint if dh.tenant_url else "[red]n/a[/]")
         table.add_row("token", "set" if dh.token else "[red]unset[/]")
     table.add_row("writes requested", "yes" if dh.mutation_enabled else "no")
-    table.add_row("model", config.agent.model)
+    table.add_row("provider", config.agent.provider.value)
+    table.add_row("OpenAI model", config.agent.openai_model)
+    table.add_row("Anthropic fallback", config.agent.anthropic_model)
     table.add_row("effort", config.agent.effort)
     table.add_row("state dir", str(config.state_dir))
     console.print(Panel(table, title="Configuration", border_style="cyan"))
@@ -106,6 +111,53 @@ def doctor(
                 console.print(
                     "[yellow]No write tools.[/] Set TOOLS_IS_MUTATION_ENABLED=true "
                     "to let the sentinel record findings in the catalog."
+                )
+
+            openai_ready = False
+            try:
+                openai_client = AsyncOpenAI()
+            except Exception:  # noqa: BLE001 - missing key is the expected failure
+                pass
+            else:
+                openai_ready = True
+                await openai_client.close()
+            if openai_ready:
+                role = (
+                    "available (not selected)"
+                    if config.agent.provider is AgentProvider.ANTHROPIC
+                    else "available — primary provider"
+                )
+                console.print(f"[green]OpenAI credentials {role}.[/]")
+            elif config.agent.provider is AgentProvider.ANTHROPIC:
+                console.print("[dim]OpenAI credentials not required in Anthropic mode.[/]")
+            else:
+                console.print(
+                    "[yellow]No OpenAI credentials.[/] Set OPENAI_API_KEY; "
+                    "Anthropic will be tried as the fallback."
+                )
+
+            anthropic_client = AsyncAnthropic()
+            try:
+                anthropic_ready = bool(
+                    anthropic_client.api_key
+                    or anthropic_client.auth_token
+                    or anthropic_client.credentials
+                )
+            finally:
+                await anthropic_client.close()
+            if anthropic_ready:
+                role = (
+                    "selected provider"
+                    if config.agent.provider is AgentProvider.ANTHROPIC
+                    else "fallback available"
+                )
+                console.print(f"[green]Anthropic credentials available — {role}.[/]")
+            elif openai_ready and config.agent.provider is not AgentProvider.ANTHROPIC:
+                console.print("[dim]Anthropic fallback credentials not configured.[/]")
+            else:
+                console.print(
+                    "[yellow]No Anthropic credentials.[/] Set ANTHROPIC_API_KEY or "
+                    "ANTHROPIC_AUTH_TOKEN to enable the fallback."
                 )
 
     try:
@@ -162,7 +214,11 @@ def baseline(
     config = _load_config(env_file)
     urn = _validate_urn(model_urn, expect="mlModel")
     sentinel = Sentinel(config)
-    run = asyncio.run(sentinel.capture_baseline(urn))
+    try:
+        run = asyncio.run(sentinel.capture_baseline(urn))
+    except (MCPConnectionError, LineageError, SnapshotCaptureError) as exc:
+        console.print(f"[bold red]{exc}[/]")
+        raise typer.Exit(EXIT_ERROR) from exc
     for note in run.notes:
         console.print(f"[dim]•[/] {note}")
     if run.baseline_created:
@@ -189,7 +245,7 @@ def check(
 
     try:
         run = asyncio.run(sentinel.check(urn, write_back=write_back))
-    except MCPConnectionError as exc:
+    except (MCPConnectionError, LineageError, SnapshotCaptureError, AgentExecutionError) as exc:
         console.print(f"[bold red]{exc}[/]")
         raise typer.Exit(EXIT_ERROR) from exc
 
@@ -232,7 +288,12 @@ def watch(
         console.rule(urn)
         try:
             run = asyncio.run(sentinel.check(urn, write_back=write_back))
-        except MCPConnectionError as exc:
+        except (
+            MCPConnectionError,
+            LineageError,
+            SnapshotCaptureError,
+            AgentExecutionError,
+        ) as exc:
             console.print(f"[bold red]{exc}[/]")
             raise typer.Exit(EXIT_ERROR) from exc
         _render_run(run)
@@ -271,9 +332,11 @@ def _render_run(run: SentinelRun) -> None:
         s = run.graph.summary()
         console.print(
             f"[dim]lineage:[/] {s['upstream_count']} upstream, "
-            f"{s['downstream_count']} downstream, depth {s['depth_reached']}"
+            f"{s['downstream_count']} downstream, max hops {s['max_hops']}"
             + (" [yellow](truncated)[/]" if s["truncated"] else "")
         )
+        for error in s["errors"]:
+            console.print(f"[yellow]lineage warning:[/] {error}")
 
     if run.drift:
         table = Table(title=f"Upstream changes ({len(run.drift)})", title_justify="left")

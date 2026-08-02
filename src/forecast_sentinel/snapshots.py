@@ -29,6 +29,20 @@ class DriftKind(str, Enum):
     NULLABILITY_CHANGED = "nullability_changed"
 
 
+class SnapshotCaptureError(RuntimeError):
+    """Raised when any training-input schema could not be captured.
+
+    A partial current snapshot cannot safely be interpreted as "no drift". The
+    caller must surface the incomplete read and retry rather than silently
+    skipping the dataset that failed.
+    """
+
+    def __init__(self, failures: dict[str, str]) -> None:
+        self.failures = failures
+        detail = "; ".join(f"{urn}: {error}" for urn, error in failures.items())
+        super().__init__(f"could not capture {len(failures)} training-input schema(s): {detail}")
+
+
 # How dangerous each drift kind is to a *trained* model, before any context.
 # Removals and type changes break feature encoding; additions do not.
 DRIFT_SEVERITY: dict[DriftKind, str] = {
@@ -162,14 +176,18 @@ class SnapshotStore:
 async def capture_snapshot(
     mcp: DataHubMCP, model_urn: str, dataset_urns: list[str]
 ) -> Snapshot:
-    """Read the current schema of each training input via `list_schema_fields`."""
+    """Read every training-input schema, raising if any input cannot be read."""
     datasets: dict[str, list[FieldSpec]] = {}
+    failures: dict[str, str] = {}
     for dataset_urn in dataset_urns:
         try:
             payload = await mcp.call("list_schema_fields", {"urn": dataset_urn})
-        except Exception:  # noqa: BLE001 - record what we can, note what we can't
+        except Exception as exc:  # noqa: BLE001 - collect every failed input before aborting
+            failures[dataset_urn] = str(exc) or type(exc).__name__
             continue
         datasets[dataset_urn] = parse_schema_fields(payload)
+    if failures:
+        raise SnapshotCaptureError(failures)
     return Snapshot(
         model_urn=model_urn,
         captured_at=datetime.now(timezone.utc).isoformat(timespec="seconds"),

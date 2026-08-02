@@ -2,7 +2,7 @@
 
 Working notes on the DataHub surfaces this project depends on. Everything marked
 **verified** was checked against installed packages or live signatures on
-**2026-07-26**; everything marked *from docs* came from documentation only and
+**2026-07-27**; everything marked *from docs* came from documentation only and
 should be confirmed against a running instance.
 
 ## MCP server
@@ -78,6 +78,30 @@ It takes the **`ClientSession`**, not the 2.x `Client` — which is the deciding
 reason for the 1.x pin. `client.beta.messages.tool_runner(...)` accepts `model`,
 `max_tokens`, `tools`, `system`, `thinking`, `output_config`, `max_iterations`.
 
+### OpenAI bridge — **verified**
+
+Installed `openai` **2.48.0**. The Responses API accepts `instructions`,
+`input`, `tools`, `max_output_tokens`, `reasoning`, and
+`previous_response_id`. Its function-tool shape is:
+
+```python
+{
+    "type": "function",
+    "name": "get_lineage",
+    "description": "...",
+    "parameters": {"type": "object", "properties": {...}},
+    "strict": False,
+}
+```
+
+`strict` is a required field in the installed SDK's `FunctionToolParam`. The
+OpenAI API cannot connect to the self-hosted stdio process, so the Sentinel
+presents the MCP schemas as function tools, executes requested calls through
+the existing local `ClientSession`, and returns `function_call_output` items.
+Continuation uses the response id from the prior turn. Mutation tools are
+filtered before schema conversion, using the same `WRITE_TOOLS` boundary as the
+Anthropic adapter.
+
 ## ML metadata model (*from docs*)
 
 URN formats:
@@ -122,7 +146,7 @@ Model aspects: `mlModelKey`, `mlModelProperties`, `intendedUse`,
 
 ## Python SDK — **verified**
 
-Installed `acryl-datahub` **1.6.0.15**. `datahub.sdk` is flagged
+Installed `acryl-datahub` **1.6.0.16**. `datahub.sdk` is flagged
 `ExperimentalWarning` by DataHub itself — signatures may move between versions,
 which is why `scripts/seed_ml_demo.py --dry-run` exists.
 
@@ -200,7 +224,8 @@ a verdict rubric.
 ```
 mcp             1.28.1
 anthropic       0.120.0
-acryl-datahub   1.6.0.15
+openai          2.48.0
+acryl-datahub   1.6.0.16
 pydantic        2.13.4
 python          3.12.13
 ```

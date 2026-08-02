@@ -20,6 +20,7 @@ from datetime import datetime, timezone
 from typing import Any
 
 from anthropic import AsyncAnthropic, beta_async_tool
+from openai import AsyncOpenAI
 
 from forecast_sentinel.agent.prompts import (
     SYSTEM_PROMPT,
@@ -27,8 +28,12 @@ from forecast_sentinel.agent.prompts import (
     build_no_drift_prompt,
 )
 from forecast_sentinel.agent.schemas import Decision, Verdict, WriteBack
-from forecast_sentinel.config import SentinelConfig
-from forecast_sentinel.datahub.mcp_client import DataHubMCP, MCPConnectionError
+from forecast_sentinel.config import AgentProvider, SentinelConfig
+from forecast_sentinel.datahub.mcp_client import (
+    WRITE_TOOLS,
+    DataHubMCP,
+    MCPConnectionError,
+)
 from forecast_sentinel.datahub.ml_lineage import Asset, MLLineageGraph, build_ml_lineage
 from forecast_sentinel.datahub.urns import parse_urn
 from forecast_sentinel.snapshots import (
@@ -41,6 +46,55 @@ from forecast_sentinel.snapshots import (
 SENTINEL_TAG = "urn:li:tag:sentinel-reviewed"
 BLOCK_TAG = "urn:li:tag:model-invalidated"
 WARN_TAG = "urn:li:tag:model-needs-review"
+STATUS_TAGS = (SENTINEL_TAG, BLOCK_TAG, WARN_TAG)
+
+_OPENAI_VERDICT_TOOL: dict[str, Any] = {
+    "type": "function",
+    "name": "emit_verdict",
+    "strict": False,
+    "description": "Record the final typed verdict for this model. Call exactly once.",
+    "parameters": {
+        "type": "object",
+        "properties": {
+            "decision": {"type": "string", "enum": ["BLOCK", "WARN", "OK", "UNKNOWN"]},
+            "headline": {"type": "string"},
+            "reasoning": {"type": "string"},
+            "risks": {
+                "type": "array",
+                "items": {
+                    "type": "object",
+                    "properties": {
+                        "title": {"type": "string"},
+                        "severity": {
+                            "type": "string",
+                            "enum": ["low", "medium", "high", "critical"],
+                        },
+                        "mechanism": {"type": "string"},
+                        "affected_urn": {"type": ["string", "null"]},
+                        "evidence": {"type": "array", "items": {"type": "string"}},
+                    },
+                    "required": ["title", "severity", "mechanism"],
+                },
+            },
+            "recommended_actions": {"type": "array", "items": {"type": "string"}},
+            "downstream_at_risk": {"type": "array", "items": {"type": "string"}},
+            "confidence": {
+                "type": ["string", "null"],
+                "enum": ["low", "medium", "high", "critical", None],
+            },
+            "unverified_claims": {"type": "array", "items": {"type": "string"}},
+        },
+        "required": ["decision", "headline", "reasoning"],
+    },
+}
+
+
+class AgentExecutionError(RuntimeError):
+    """Raised when the model tool-runner cannot complete a judgement."""
+
+    def __init__(self, message: str, *, usage: dict[str, int] | None = None) -> None:
+        super().__init__(message)
+        self.usage = usage or {"input_tokens": 0, "output_tokens": 0}
 
 
 @dataclass
@@ -89,9 +143,18 @@ class SentinelRun:
 class Sentinel:
     """Orchestrates one or more model checks against a DataHub instance."""
 
-    def __init__(self, config: SentinelConfig, *, anthropic: AsyncAnthropic | None = None) -> None:
+    def __init__(
+        self,
+        config: SentinelConfig,
+        *,
+        openai: AsyncOpenAI | None = None,
+        anthropic: AsyncAnthropic | None = None,
+    ) -> None:
         self._config = config
-        self._client = anthropic or AsyncAnthropic()
+        # Clients are lazy so baseline-only commands do not require model
+        # credentials. Injection keeps both provider loops independently testable.
+        self._openai = openai
+        self._anthropic = anthropic
         self._store = SnapshotStore(config.baseline_dir)
         self._server_log = config.mcp_server_log
 
@@ -187,7 +250,168 @@ class Sentinel:
     async def _judge(
         self, mcp: DataHubMCP, run: SentinelRun, *, allow_writes: bool
     ) -> Verdict | None:
-        """Run the agent loop over DataHub's tools and capture its verdict."""
+        """Prefer OpenAI and retry with Anthropic when that path cannot judge."""
+        user_turn = _build_judgement_prompt(run, allow_writes=allow_writes)
+        providers = (
+            [AgentProvider.ANTHROPIC]
+            if self._config.agent.provider is AgentProvider.ANTHROPIC
+            else [AgentProvider.OPENAI, AgentProvider.ANTHROPIC]
+        )
+        failures: list[str] = []
+        completed_without_verdict = False
+        total_usage = {"input_tokens": 0, "output_tokens": 0}
+
+        for index, provider in enumerate(providers):
+            try:
+                if provider is AgentProvider.OPENAI:
+                    verdict, usage = await self._judge_openai(mcp, run, user_turn)
+                    model = self._config.agent.openai_model
+                else:
+                    verdict, usage = await self._judge_anthropic(mcp, run, user_turn)
+                    model = self._config.agent.anthropic_model
+            except AgentExecutionError as exc:
+                failures.append(f"{provider.value}: {exc}")
+                _merge_usage(total_usage, exc.usage)
+                if index + 1 < len(providers):
+                    run.notes.append(
+                        f"{_provider_label(provider)} judgement failed; trying "
+                        f"{_provider_label(providers[index + 1])} fallback."
+                    )
+                continue
+
+            completed_without_verdict = verdict is None
+            _merge_usage(total_usage, usage)
+            if verdict is not None:
+                run.token_usage = total_usage
+                run.notes.append(
+                    f"Judgement provider: {_provider_label(provider)} ({model})."
+                )
+                return verdict
+            if index + 1 < len(providers):
+                run.notes.append(
+                    f"{_provider_label(provider)} finished without a verdict; trying "
+                    f"{_provider_label(providers[index + 1])} fallback."
+                )
+
+        run.token_usage = total_usage
+        if completed_without_verdict:
+            run.notes.append(
+                "The agent finished without emitting a verdict. Treating as UNKNOWN."
+            )
+            return None
+
+        detail = "; ".join(failures) or "no provider was attempted"
+        raise AgentExecutionError(f"no model provider could complete the judgement ({detail})")
+
+    async def _judge_openai(
+        self, mcp: DataHubMCP, run: SentinelRun, user_turn: str
+    ) -> tuple[Verdict | None, dict[str, int]]:
+        """Run a local function-tool loop through OpenAI's Responses API."""
+        client = self._openai
+        owns_client = client is None
+        if client is None:
+            try:
+                client = AsyncOpenAI()
+            except Exception as exc:  # noqa: BLE001 - normalize credential/config failures
+                raise AgentExecutionError(f"OpenAI client unavailable: {exc}") from exc
+
+        captured: dict[str, Verdict] = {}
+        tools = [*mcp.openai_tools(include_writes=False), _OPENAI_VERDICT_TOOL]
+        usage = {"input_tokens": 0, "output_tokens": 0}
+        next_input: str | list[dict[str, Any]] = user_turn
+        previous_response_id: str | None = None
+
+        try:
+            for _ in range(self._config.agent.max_iterations):
+                request: dict[str, Any] = {
+                    "model": self._config.agent.openai_model,
+                    "instructions": SYSTEM_PROMPT,
+                    "input": next_input,
+                    "tools": tools,
+                    "max_output_tokens": self._config.agent.max_tokens,
+                    "reasoning": {"effort": self._config.agent.effort},
+                }
+                if previous_response_id is not None:
+                    request["previous_response_id"] = previous_response_id
+
+                try:
+                    response = await client.responses.create(**request)
+                except Exception as exc:  # noqa: BLE001 - provider errors enable fallback
+                    raise AgentExecutionError(
+                        f"OpenAI Responses API failed: {exc}", usage=usage
+                    ) from exc
+
+                _merge_usage(usage, _response_usage(response))
+                function_calls = [
+                    item
+                    for item in (_field(response, "output", []) or [])
+                    if _field(item, "type") == "function_call"
+                ]
+                if not function_calls:
+                    return captured.get("verdict"), usage
+
+                tool_outputs: list[dict[str, Any]] = []
+                for call in function_calls:
+                    call_id = str(_field(call, "call_id", ""))
+                    name = str(_field(call, "name", ""))
+                    arguments, parse_error = _parse_tool_arguments(
+                        _field(call, "arguments", "{}")
+                    )
+                    if parse_error:
+                        output = parse_error
+                    elif name == "emit_verdict":
+                        output = _capture_verdict(run, captured, arguments)
+                    elif name in WRITE_TOOLS:
+                        output = f"Tool call rejected: {name} is a mutation tool."
+                    elif name not in mcp.inventory.names:
+                        output = f"Tool call rejected: unknown DataHub tool {name!r}."
+                    else:
+                        try:
+                            output = _render_tool_output(await mcp.call(name, arguments))
+                        except Exception as exc:  # noqa: BLE001 - return read failure to model
+                            output = f"DataHub tool {name!r} failed: {exc}"
+                    tool_outputs.append(
+                        {
+                            "type": "function_call_output",
+                            "call_id": call_id,
+                            "output": output,
+                        }
+                    )
+
+                # A valid typed verdict is the terminal condition. Catalog
+                # mutations still happen later in the orchestrator.
+                if "verdict" in captured:
+                    return captured["verdict"], usage
+
+                response_id = _field(response, "id")
+                if not response_id:
+                    raise AgentExecutionError(
+                        "OpenAI response requested tools but returned no response id",
+                        usage=usage,
+                    )
+                previous_response_id = str(response_id)
+                next_input = tool_outputs
+
+            raise AgentExecutionError(
+                f"OpenAI exceeded {self._config.agent.max_iterations} tool iterations",
+                usage=usage,
+            )
+        finally:
+            if owns_client:
+                await client.close()
+
+    async def _judge_anthropic(
+        self, mcp: DataHubMCP, run: SentinelRun, user_turn: str
+    ) -> tuple[Verdict | None, dict[str, int]]:
+        """Run the original Anthropic tool runner as the fallback provider."""
+        client = self._anthropic
+        owns_client = client is None
+        if client is None:
+            try:
+                client = AsyncAnthropic()
+            except Exception as exc:  # noqa: BLE001 - normalize credential/config failures
+                raise AgentExecutionError(f"Anthropic client unavailable: {exc}") from exc
+
         captured: dict[str, Verdict] = {}
 
         @beta_async_tool
@@ -214,68 +438,52 @@ class Sentinel:
                 confidence: low|medium|high|critical.
                 unverified_claims: Anything you could not confirm from DataHub.
             """
-            try:
-                verdict = Verdict(
-                    model_urn=run.model_urn,
-                    decision=Decision(decision.strip().upper()),
-                    headline=headline,
-                    reasoning=reasoning,
-                    risks=risks or [],  # type: ignore[arg-type]
-                    recommended_actions=recommended_actions or [],
-                    downstream_at_risk=downstream_at_risk or [],
-                    confidence=confidence,  # type: ignore[arg-type]
-                    unverified_claims=unverified_claims or [],
-                )
-            except Exception as exc:  # noqa: BLE001 - feed the error back to the model
-                return (
-                    f"Verdict rejected: {exc}. Fix the fields and call emit_verdict again."
-                )
-            captured["verdict"] = verdict
-            return f"Verdict recorded: {verdict.decision.value}."
-
-        lineage_summary = _render_lineage(run.graph)
-        if run.drift:
-            user_turn = build_check_prompt(
-                model_urn=run.model_urn,
-                model_label=run.model_label,
-                lineage_summary=lineage_summary,
-                drift_summary=_render_drift(run.drift),
-                write_enabled=allow_writes,
+            return _capture_verdict(
+                run,
+                captured,
+                {
+                    "decision": decision,
+                    "headline": headline,
+                    "reasoning": reasoning,
+                    "risks": risks,
+                    "recommended_actions": recommended_actions,
+                    "downstream_at_risk": downstream_at_risk,
+                    "confidence": confidence,
+                    "unverified_claims": unverified_claims,
+                },
             )
-        else:
-            user_turn = build_no_drift_prompt(
-                model_urn=run.model_urn,
-                model_label=run.model_label,
-                lineage_summary=lineage_summary,
-            )
-
-        tools = [*mcp.anthropic_tools(include_writes=False), emit_verdict]
-
-        runner = self._client.beta.messages.tool_runner(
-            model=self._config.agent.model,
-            max_tokens=self._config.agent.max_tokens,
-            thinking={"type": "adaptive"},
-            output_config={"effort": self._config.agent.effort},
-            system=SYSTEM_PROMPT,
-            tools=tools,
-            messages=[{"role": "user", "content": user_turn}],
-            max_iterations=self._config.agent.max_iterations,
-        )
 
         usage = {"input_tokens": 0, "output_tokens": 0}
-        async for message in runner:
-            message_usage = getattr(message, "usage", None)
-            if message_usage is not None:
-                usage["input_tokens"] += getattr(message_usage, "input_tokens", 0) or 0
-                usage["output_tokens"] += getattr(message_usage, "output_tokens", 0) or 0
-        run.token_usage = usage
-
-        verdict = captured.get("verdict")
-        if verdict is None:
-            run.notes.append(
-                "The agent finished without emitting a verdict. Treating as UNKNOWN."
-            )
-        return verdict
+        try:
+            try:
+                tools = [*mcp.anthropic_tools(include_writes=False), emit_verdict]
+                runner = client.beta.messages.tool_runner(
+                    model=self._config.agent.anthropic_model,
+                    max_tokens=self._config.agent.max_tokens,
+                    thinking={"type": "adaptive"},
+                    output_config={"effort": self._config.agent.effort},
+                    system=SYSTEM_PROMPT,
+                    tools=tools,
+                    messages=[{"role": "user", "content": user_turn}],
+                    max_iterations=self._config.agent.max_iterations,
+                )
+                async for message in runner:
+                    message_usage = getattr(message, "usage", None)
+                    if message_usage is not None:
+                        usage["input_tokens"] += (
+                            getattr(message_usage, "input_tokens", 0) or 0
+                        )
+                        usage["output_tokens"] += (
+                            getattr(message_usage, "output_tokens", 0) or 0
+                        )
+            except Exception as exc:  # noqa: BLE001 - provider errors enable fallback
+                raise AgentExecutionError(
+                    f"Anthropic Messages API failed: {exc}", usage=usage
+                ) from exc
+            return captured.get("verdict"), usage
+        finally:
+            if owns_client:
+                await client.close()
 
     async def _record_verdict(self, mcp: DataHubMCP, run: SentinelRun) -> list[WriteBack]:
         """Persist the verdict into DataHub so it is visible in the catalog."""
@@ -290,11 +498,26 @@ class Sentinel:
             Decision.UNKNOWN: WARN_TAG,
         }.get(verdict.decision, SENTINEL_TAG)
 
+        stale_tags = [candidate for candidate in STATUS_TAGS if candidate != tag]
+        if stale_tags and "remove_tags" in mcp.inventory.names:
+            writes.append(
+                await self._try_write(
+                    mcp,
+                    "remove_tags",
+                    {
+                        "tag_urns": stale_tags,
+                        "entity_urns": [run.model_urn],
+                    },
+                    target=run.model_urn,
+                    detail="cleared obsolete sentinel status tags",
+                )
+            )
+
         writes.append(
             await self._try_write(
                 mcp,
                 "add_tags",
-                {"urn": run.model_urn, "tags": [tag]},
+                {"tag_urns": [tag], "entity_urns": [run.model_urn]},
                 target=run.model_urn,
                 detail=f"tagged {tag}",
             )
@@ -306,9 +529,13 @@ class Sentinel:
             await self._try_write(
                 mcp,
                 "update_description",
-                {"urn": run.model_urn, "description": status},
+                {
+                    "entity_urn": run.model_urn,
+                    "operation": "append",
+                    "description": f"\n\n{status}",
+                },
                 target=run.model_urn,
-                detail="updated description with verdict status",
+                detail="appended verdict status to the description",
             )
         )
 
@@ -318,11 +545,14 @@ class Sentinel:
                     mcp,
                     "save_document",
                     {
+                        "document_type": "Analysis",
                         "title": f"Sentinel report: {run.model_label}",
                         "content": _render_markdown_report(run),
+                        "topics": ["forecast-sentinel", verdict.decision.value.lower()],
+                        "related_assets": [run.model_urn],
                     },
                     target=run.model_urn,
-                    detail="saved full findings document",
+                    detail="saved full findings document linked to the model",
                 )
             )
 
@@ -344,6 +574,96 @@ class Sentinel:
                 tool=tool, target_urn=target, detail=detail, succeeded=False, error=str(exc)
             )
         return WriteBack(tool=tool, target_urn=target, detail=detail)
+
+
+# --- provider helpers --------------------------------------------------------
+
+
+def _build_judgement_prompt(run: SentinelRun, *, allow_writes: bool) -> str:
+    lineage_summary = _render_lineage(run.graph)
+    if run.drift:
+        return build_check_prompt(
+            model_urn=run.model_urn,
+            model_label=run.model_label,
+            lineage_summary=lineage_summary,
+            drift_summary=_render_drift(run.drift),
+            write_enabled=allow_writes,
+        )
+    return build_no_drift_prompt(
+        model_urn=run.model_urn,
+        model_label=run.model_label,
+        lineage_summary=lineage_summary,
+        baseline_created=run.baseline_created,
+        comparison_performed=run.baseline_captured_at is not None,
+    )
+
+
+def _capture_verdict(
+    run: SentinelRun,
+    captured: dict[str, Verdict],
+    arguments: dict[str, Any],
+) -> str:
+    """Validate the shared tool payload before any provider can end the run."""
+    try:
+        decision = str(arguments.get("decision", "")).strip().upper()
+        verdict = Verdict(
+            model_urn=run.model_urn,
+            decision=Decision(decision),
+            headline=arguments.get("headline", ""),
+            reasoning=arguments.get("reasoning", ""),
+            risks=arguments.get("risks") or [],
+            recommended_actions=arguments.get("recommended_actions") or [],
+            downstream_at_risk=arguments.get("downstream_at_risk") or [],
+            confidence=arguments.get("confidence"),
+            unverified_claims=arguments.get("unverified_claims") or [],
+        )
+    except Exception as exc:  # noqa: BLE001 - return validation detail to the model
+        return f"Verdict rejected: {exc}. Fix the fields and call emit_verdict again."
+    captured["verdict"] = verdict
+    return f"Verdict recorded: {verdict.decision.value}."
+
+
+def _parse_tool_arguments(raw: Any) -> tuple[dict[str, Any], str | None]:
+    if isinstance(raw, dict):
+        return raw, None
+    try:
+        parsed = json.loads(raw or "{}")
+    except (TypeError, json.JSONDecodeError) as exc:
+        return {}, f"Tool arguments rejected: invalid JSON ({exc})."
+    if not isinstance(parsed, dict):
+        return {}, "Tool arguments rejected: expected a JSON object."
+    return parsed, None
+
+
+def _render_tool_output(payload: Any) -> str:
+    if isinstance(payload, str):
+        return payload
+    return json.dumps(payload, default=str)
+
+
+def _field(value: Any, name: str, default: Any = None) -> Any:
+    if isinstance(value, dict):
+        return value.get(name, default)
+    return getattr(value, name, default)
+
+
+def _response_usage(response: Any) -> dict[str, int]:
+    usage = _field(response, "usage")
+    if usage is None:
+        return {"input_tokens": 0, "output_tokens": 0}
+    return {
+        "input_tokens": int(_field(usage, "input_tokens", 0) or 0),
+        "output_tokens": int(_field(usage, "output_tokens", 0) or 0),
+    }
+
+
+def _merge_usage(total: dict[str, int], addition: dict[str, int]) -> None:
+    total["input_tokens"] += addition.get("input_tokens", 0)
+    total["output_tokens"] += addition.get("output_tokens", 0)
+
+
+def _provider_label(provider: AgentProvider) -> str:
+    return "OpenAI" if provider is AgentProvider.OPENAI else "Anthropic"
 
 
 # --- rendering helpers -------------------------------------------------------
@@ -377,9 +697,11 @@ def _render_lineage(graph: MLLineageGraph | None) -> str:
     summary = graph.summary()
     lines.append(
         f"{summary['upstream_count']} upstream / {summary['downstream_count']} downstream "
-        f"assets, depth {summary['depth_reached']}"
+        f"assets, search bounded at {summary['max_hops']} hops"
         + (" (truncated)" if summary["truncated"] else "")
     )
+    if errors := summary["errors"]:
+        lines.append("Lineage retrieval warnings: " + "; ".join(errors))
     if owners := summary["owners"]:
         lines.append(f"Owners: {', '.join(owners[:8])}")
 

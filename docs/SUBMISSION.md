@@ -7,8 +7,8 @@ Deadline: **2026-08-10, 5:00 PM EDT**. Requirements digested in
 
 | Item | Status |
 |---|---|
-| Working project using DataHub (MCP Server) | Built — needs a live-instance run |
-| Public repository with source + setup instructions | **Not yet pushed** |
+| Working project using DataHub (MCP Server) | Built — deterministic path and all writes live-verified; authenticated model judgement pending |
+| Public repository with source + setup instructions | Done — public `grabowski187211-prog/Forecast-Sentinel` repository |
 | Apache 2.0 licence, detectable at repo root | Done — `LICENSE` |
 | Text description of features and functionality | Done — `README.md` |
 | Demo video, <3 min, public, YouTube/Vimeo/Youku | **Not yet recorded** |
@@ -16,19 +16,22 @@ Deadline: **2026-08-10, 5:00 PM EDT**. Requirements digested in
 
 ## Before recording anything
 
-The project is verified only as far as it can be without Docker:
+Current verification:
 
-- [x] 66 unit tests pass (deterministic half, no DataHub needed)
-- [x] `ruff check src/` clean
+- [x] Unit and orchestration-contract tests pass without DataHub
+- [x] `ruff check src/ tests/ scripts/` clean
 - [x] All third-party API signatures verified against installed packages
 - [x] `seed_ml_demo.py --dry-run` constructs every entity against the real SDK
-- [ ] **End-to-end run against a live DataHub** — blocked on Docker install
+- [x] Live DataHub 1.5.0.6: 3 upstream / 1 downstream assets, both schemas captured, deliberate `INT → VARCHAR` drift detected
+- [x] Live write-back smoke test: obsolete tags removed, `model-invalidated` added, status appended, linked `Analysis` document saved
+- [ ] **Fresh full run:** real OpenAI verdict pending `OPENAI_API_KEY`
 
-That last item is the gate. Everything else is scaffolding until one real
-`sentinel check` has produced a BLOCK verdict against a running instance.
+That last item is the recording gate. Do not present the illustrative README
+transcript as real output until the fresh run has produced the checked-in JSON,
+HTML, and terminal transcript.
 
 ```bash
-# install Docker Desktop first, then:
+# start Docker/Colima and then:
 ./scripts/bootstrap_datahub.sh
 sentinel doctor
 MODEL='urn:li:mlModel:(urn:li:dataPlatform:mlflow,demand-forecast-v3,PROD)'
@@ -65,7 +68,7 @@ Six equally-weighted criteria:
 | Criterion | Confidence | Gap |
 |---|---|---|
 | Use of DataHub | Strong | 9 tools, read **and** write, both deployment shapes |
-| Technical execution | Strong | Tests, bounded traversal, CI exit codes — pending the live run |
+| Technical execution | Strong | Tests, bounded traversal, dual-provider fallback, CI exit codes, live writes — pending an authenticated model run |
 | Originality | Good | Write-back and the deterministic/agentic split are the distinctive parts |
 | Real-world usefulness | Strong | Silent invalidation is a real, expensive, common failure |
 | Submission quality | Pending | Entirely dependent on the video |
@@ -97,10 +100,10 @@ the submission description.
 
 The rules require disclosing pre-existing code. Nothing in this repository is
 pre-existing: it was written during the submission period. Third-party
-dependencies (`anthropic`, `mcp`, `acryl-datahub`, `pydantic`, `typer`, `rich`,
-`jinja2`, `httpx`) are standard libraries used as-is, which the rules permit
-without disclosure. Claude Code was used as the coding assistant, which the rules
-explicitly permit.
+dependencies (`openai`, `anthropic`, `mcp`, `acryl-datahub`, `pydantic`,
+`typer`, `rich`, `jinja2`, `httpx`) are standard libraries used as-is, which the
+rules permit without disclosure. Claude Code and OpenAI Codex were used as coding
+assistants, which the rules explicitly permit.
 
 ## Pre-submit checks
 

@@ -24,6 +24,14 @@ class Mode(str, Enum):
     CLOUD = "cloud"
 
 
+class AgentProvider(str, Enum):
+    """Which model API judges the deterministic DataHub evidence."""
+
+    AUTO = "auto"
+    OPENAI = "openai"
+    ANTHROPIC = "anthropic"
+
+
 class ConfigError(RuntimeError):
     """Raised when the environment cannot produce a usable configuration."""
 
@@ -77,9 +85,13 @@ class DataHubConfig:
 
 @dataclass(frozen=True)
 class AgentConfig:
-    model: str = "claude-opus-5"
+    provider: AgentProvider = AgentProvider.AUTO
+    openai_model: str = "gpt-5.6"
+    anthropic_model: str = "claude-opus-5"
     effort: str = "high"
-    max_tokens: int = 32_000
+    # Both provider paths use bounded non-streaming responses. A structured
+    # verdict and its read-only tool calls fit comfortably within this budget.
+    max_tokens: int = 8_000
     max_iterations: int = 40
 
 
@@ -129,8 +141,39 @@ class SentinelConfig:
             mutation_enabled=_flag(os.getenv("TOOLS_IS_MUTATION_ENABLED"), default=True),
             tool_response_token_limit=int(os.getenv("TOOL_RESPONSE_TOKEN_LIMIT", "80000")),
         )
+        raw_provider = os.getenv("SENTINEL_PROVIDER", "auto").strip().lower()
+        try:
+            provider = AgentProvider(raw_provider)
+        except ValueError as exc:
+            raise ConfigError(
+                "SENTINEL_PROVIDER must be 'auto', 'openai', or 'anthropic', "
+                f"got {raw_provider!r}"
+            ) from exc
+
+        # SENTINEL_MODEL was the original Anthropic-only setting. Keep old
+        # environments working by routing a legacy Claude slug to Anthropic and
+        # any other legacy slug to OpenAI. Provider-specific variables win.
+        legacy_model = _clean(os.getenv("SENTINEL_MODEL"))
+        legacy_openai = (
+            legacy_model
+            if legacy_model and not legacy_model.startswith("claude")
+            else None
+        )
+        legacy_anthropic = (
+            legacy_model if legacy_model and legacy_model.startswith("claude") else None
+        )
         agent = AgentConfig(
-            model=os.getenv("SENTINEL_MODEL", "claude-opus-5"),
+            provider=provider,
+            openai_model=(
+                _clean(os.getenv("SENTINEL_OPENAI_MODEL"))
+                or legacy_openai
+                or "gpt-5.6"
+            ),
+            anthropic_model=(
+                _clean(os.getenv("SENTINEL_ANTHROPIC_MODEL"))
+                or legacy_anthropic
+                or "claude-opus-5"
+            ),
             effort=os.getenv("SENTINEL_EFFORT", "high"),
         )
         return cls(

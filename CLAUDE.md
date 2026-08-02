@@ -19,7 +19,7 @@ The venv is Python 3.12 and **not** activated by default. Prefix commands or
 activate first.
 
 ```bash
-.venv/bin/pytest                              # 66 tests, no DataHub needed
+.venv/bin/pytest                              # no DataHub needed
 .venv/bin/pytest tests/test_snapshots.py      # one file
 .venv/bin/pytest -k drift                     # one pattern
 .venv/bin/pytest tests/test_urns.py::TestNestedUrns::test_dataset_urn_keeps_platform_intact
@@ -27,7 +27,7 @@ activate first.
 .venv/bin/ruff check src/ tests/ scripts/     # lint (must be clean)
 .venv/bin/ruff check --fix src/
 
-uv pip install -e ".[dev]"                    # add ,cli for the DataHub SDK
+uv pip install -e ".[dev,cli]"                # tests + DataHub SDK/CLI
 ```
 
 CLI (needs a live DataHub — see `docs/SETUP.md`):
@@ -52,11 +52,11 @@ CLI (needs a live DataHub — see `docs/SETUP.md`):
 The work is split in two, and the split is the design:
 
 - **Deterministic half** (`snapshots.py`, `datahub/ml_lineage.py`) answers *what
-  changed*. Pure Python: bounded BFS over `get_lineage`, plus a schema diff
+  changed*. Pure Python: bounded server-side `get_lineage` traversal plus a schema diff
   against a recorded baseline. Reproducible, no model involved.
-- **Agentic half** (`agent/`) answers *does it matter*. Claude reasons over
-  DataHub's real MCP tools about whether a dtype change breaks a specific
-  trained artefact.
+- **Agentic half** (`agent/`) answers *does it matter*. OpenAI is primary and
+  Anthropic is the fallback; both reason over DataHub's real MCP tools about
+  whether a dtype change breaks a specific trained artefact.
 
 **Do not move drift detection into the agent.** A diff is not a judgement call;
 making it one costs money and makes the answer vary between runs. Conversely, do
@@ -87,20 +87,26 @@ URN, which embeds a `dataPlatform` URN. `split(",")` corrupts all of them; use
 `datahub.urns.parse_urn`, which tracks parenthesis depth. Key arity also varies
 by entity type, so `Urn.parts` stays positional rather than assuming a shape.
 
-**The agent gets read tools only.** `mcp.anthropic_tools(include_writes=False)`
-in `Sentinel._judge`. Write-back happens afterwards in `_record_verdict`, in
-code, from the structured verdict. The model decides *what* to record, not how
-many catalog objects to touch. Keep it that way.
+**The agent gets read tools only.** `mcp.openai_tools(include_writes=False)` and
+`mcp.anthropic_tools(include_writes=False)` share the same `WRITE_TOOLS` safety
+boundary. Write-back happens afterwards in `_record_verdict`, in code, from the
+structured verdict. The model decides *what* to record, not how many catalog
+objects to touch. Keep it that way; fallback is safe only while this remains
+true.
 
 **Writes are double-gated.** The MCP server hides mutation tools unless
 `TOOLS_IS_MUTATION_ENABLED=true`, and `DataHubMCP.inventory.has_write_access`
 probes for them at runtime. Never assume a write tool exists — `sentinel doctor`
 reports what is actually exposed.
 
-**Lineage traversal is bounded** (`max_depth=4`, `max_nodes=250`) and sets
-`graph.truncated` when a bound is hit. That flag reaches the report on purpose: a
-partial blast radius presented as complete is worse than none. Do not silently
-raise the bounds.
+**Lineage traversal is bounded** (`max_hops=4`, `max_results=200`) and sets
+`graph.truncated` when DataHub returns `hasMore`. That flag reaches the report on
+purpose: a partial blast radius presented as complete is worse than none. Do not
+silently raise the bounds.
+
+**Snapshot reads fail closed.** If any `list_schema_fields` call fails,
+`capture_snapshot` raises `SnapshotCaptureError`. Never turn a partial schema
+read into "no drift" or save it as a baseline.
 
 **A missing baseline is not drift.** First run on a model records a baseline and
 reviews lineage *coverage* instead. Datasets present in only one snapshot are
@@ -129,9 +135,16 @@ buries the findings that matter.
 
 ## Current verification status
 
-Verified: 66 unit tests green, `ruff` clean, all third-party signatures checked
-against installed packages, seeder dry-run constructs every entity.
+Verified: unit and orchestration-contract tests green, `ruff` clean, all
+third-party signatures checked against installed packages, seeder dry-run
+constructs every entity, and a prior live DataHub 1.5.0.6 run confirmed lineage
+and schema drift detection.
 
-**Not verified: any end-to-end run against a live DataHub** — Docker is not
-installed on this machine. Treat the sample terminal output in `README.md` as
-illustrative until a real run confirms it, and fix the README if it diverges.
+Verified separately against live DataHub: all four catalog write-back mutations
+(status-tag cleanup/addition, description append, linked document save).
+
+**Still to verify:** a fresh authenticated model judgement. OpenAI is the
+primary path (`OPENAI_API_KEY`); Anthropic remains available through
+`ANTHROPIC_API_KEY`, `ANTHROPIC_AUTH_TOKEN`, or an SDK profile. Treat the sample
+terminal output in `README.md` as illustrative until checked-in output from that
+run replaces it.

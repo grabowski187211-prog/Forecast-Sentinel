@@ -7,7 +7,8 @@
 | Python 3.10–3.12 | `acryl-datahub` and the MCP server lack 3.13+ wheels | `python3 --version` |
 | [uv](https://docs.astral.sh/uv/) | venv + `uvx` runs the MCP server | `uv --version` |
 | Docker | Only for a **local** DataHub | `docker info` |
-| Anthropic credentials | The agent half | `ant auth status` or `$ANTHROPIC_API_KEY` |
+| OpenAI API key | Primary agent path | `$OPENAI_API_KEY` |
+| Anthropic credentials | Optional fallback | `$ANTHROPIC_API_KEY`, `$ANTHROPIC_AUTH_TOKEN`, or an SDK profile |
 
 Docker needs ≥2 CPUs, 8GB RAM, 2GB swap and 13GB free disk allocated to it. If
 you are using DataHub Cloud, Docker is not needed at all.
@@ -16,14 +17,14 @@ you are using DataHub Cloud, Docker is not needed at all.
 
 ```bash
 uv venv --python 3.12
-uv pip install -e ".[dev]"          # add ,cli for the DataHub SDK + CLI
+uv pip install -e ".[dev,cli]"      # tests + DataHub SDK/CLI + demo seeder
 source .venv/bin/activate           # or prefix commands with .venv/bin/
 ```
 
 Verify:
 
 ```bash
-pytest        # 66 tests, no DataHub required
+pytest        # unit and orchestration-contract tests; no DataHub required
 ```
 
 ## 2. Configure
@@ -55,6 +56,27 @@ Generate the token in the DataHub UI under **Settings → Access Tokens**.
 `TOOLS_IS_MUTATION_ENABLED=true` is what lets the sentinel write verdicts back.
 Without it the run still works, but findings stay in the terminal and the HTML
 report — `sentinel doctor` will tell you so.
+
+### Model provider
+
+The default `auto` mode prefers OpenAI and retries with Anthropic if the OpenAI
+request fails or does not emit a valid verdict:
+
+```ini
+SENTINEL_PROVIDER=auto
+OPENAI_API_KEY=<openai-api-key>
+SENTINEL_OPENAI_MODEL=gpt-5.6
+
+# Optional fallback
+ANTHROPIC_API_KEY=
+ANTHROPIC_AUTH_TOKEN=
+SENTINEL_ANTHROPIC_MODEL=claude-opus-5
+SENTINEL_EFFORT=high
+```
+
+Set `SENTINEL_PROVIDER=anthropic` to skip OpenAI. The old `SENTINEL_MODEL`
+variable remains compatible: Claude model names are routed to Anthropic and
+other model names to OpenAI, but the provider-specific names are clearer.
 
 ## 3. Bring up a local DataHub (self-hosted only)
 
@@ -90,7 +112,8 @@ python scripts/seed_ml_demo.py              # emit the graph
 ```
 
 This creates `raw_sales` → `feat_seasonality` → `train_demand_forecast` →
-`demand-forecast-v3` → `planning-api`.
+`demand-forecast-v3` → `planning-api`, plus the three tags used for Sentinel
+status write-back.
 
 ## 4. Verify connectivity
 
@@ -99,7 +122,7 @@ sentinel doctor
 ```
 
 Expected: the configuration table, then `Connected. N MCP tools exposed.` plus
-confirmation that write tools are available.
+the write-tool state and separate OpenAI/Anthropic credential checks.
 
 ## 5. Run the demo
 
@@ -125,7 +148,9 @@ The last command should produce a **BLOCK** verdict and exit 2.
 
 **`tool 'add_tags' is not exposed`** — `TOOLS_IS_MUTATION_ENABLED` is not `true`
 on the MCP server. It is read from `.env` and passed to the subprocess, so
-restart the run after changing it.
+restart the run after changing it. Write-back also uses `remove_tags`,
+`update_description`, and optionally `save_document`; failed mutations are
+listed individually in the terminal and report.
 
 **`No mlModel entities found`** — run `python scripts/seed_ml_demo.py`. The
 showcase datapack alone does not include ML models.
@@ -137,6 +162,14 @@ review lineage coverage instead and tell you what is missing.
 **Verdict is always UNKNOWN** — usually genuine: the catalog lacks the lineage to
 decide. Check `sentinel check --json out.json` and read the agent's
 `unverified_claims`, which name exactly what metadata was missing.
+
+**`No OpenAI credentials`** — set `OPENAI_API_KEY` in `.env`. In `auto` mode the
+Sentinel will otherwise try Anthropic as the fallback.
+
+**`No Anthropic credentials`** — this is acceptable when OpenAI is configured.
+To enable fallback, set `ANTHROPIC_API_KEY` or `ANTHROPIC_AUTH_TOKEN`, or
+configure an SDK profile. DataHub connectivity alone is sufficient for `models`
+and `baseline`; `check` and `watch` need at least one model provider.
 
 **Python 3.13+ resolution errors** — create the venv with
 `uv venv --python 3.12`. `acryl-datahub` does not publish 3.13 wheels yet.

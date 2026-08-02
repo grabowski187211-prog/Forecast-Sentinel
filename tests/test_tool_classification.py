@@ -1,10 +1,10 @@
 """WRITE_TOOLS is a safety boundary, so it gets tested like one.
 
-`anthropic_tools(include_writes=False)` filters on WRITE_TOOLS to keep mutation
-tools out of the agent's hands. A tool missing from that tuple is silently handed
-to the model — which is exactly what happened: `remove_owners`, `remove_domains`
-and `remove_structured_properties` were absent, so the agent would have been
-given tools that strip ownership and domains off catalog entities.
+Both provider adapters filter on WRITE_TOOLS to keep mutation tools out of the
+agent's hands. A tool missing from that tuple is silently handed to the model —
+which is exactly what happened: `remove_owners`, `remove_domains` and
+`remove_structured_properties` were absent, so the agent would have been given
+tools that strip ownership and domains off catalog entities.
 
 The tool names below were captured from a live self-hosted DataHub 1.5.0.6 MCP
 server (18 tools, TOOLS_IS_MUTATION_ENABLED=true).
@@ -13,8 +13,15 @@ server (18 tools, TOOLS_IS_MUTATION_ENABLED=true).
 from __future__ import annotations
 
 import pytest
+from mcp.types import Tool
 
-from forecast_sentinel.datahub.mcp_client import READ_TOOLS, WRITE_TOOLS, ToolInventory
+from forecast_sentinel.config import DataHubConfig, Mode
+from forecast_sentinel.datahub.mcp_client import (
+    READ_TOOLS,
+    WRITE_TOOLS,
+    DataHubMCP,
+    ToolInventory,
+)
 
 # Exactly what the live server exposed.
 LIVE_TOOLS = (
@@ -60,7 +67,7 @@ class TestWriteToolCoverage:
     def test_every_mutating_tool_is_classified_as_a_write(self, tool):
         assert tool in WRITE_TOOLS, (
             f"{tool} mutates the catalog but is not in WRITE_TOOLS, so it would be "
-            "handed to the agent by anthropic_tools(include_writes=False)"
+            "handed to the model by a read-only provider adapter"
         )
 
     def test_every_remove_counterpart_is_present(self):
@@ -111,3 +118,34 @@ class TestInventory:
 
     def test_nothing_missing_when_all_read_tools_present(self):
         assert ToolInventory(names=READ_TOOLS).missing_read_tools() == ()
+
+
+def test_openai_adapter_exposes_read_schemas_and_filters_mutations():
+    mcp = DataHubMCP(
+        DataHubConfig(mode=Mode.SELFHOSTED, gms_url="http://localhost:8080")
+    )
+    mcp._inventory = ToolInventory(  # noqa: SLF001 - adapter contract test
+        names=("search", "remove_tags"),
+        raw=[
+            Tool(
+                name="search",
+                description="Search DataHub.",
+                inputSchema={
+                    "type": "object",
+                    "properties": {"query": {"type": "string"}},
+                    "required": ["query"],
+                },
+            ),
+            Tool(
+                name="remove_tags",
+                description="Remove tags.",
+                inputSchema={"type": "object", "properties": {}},
+            ),
+        ],
+    )
+
+    tools = mcp.openai_tools(include_writes=False)
+
+    assert [tool["name"] for tool in tools] == ["search"]
+    assert tools[0]["strict"] is False
+    assert tools[0]["parameters"]["required"] == ["query"]

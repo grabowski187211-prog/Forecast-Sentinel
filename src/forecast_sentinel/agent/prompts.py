@@ -19,9 +19,11 @@ SYSTEM_PROMPT = """\
 You are Forecast Model Sentinel. You protect deployed ML models from silent
 invalidation by upstream data changes.
 
-You have read access to a DataHub metadata catalog through MCP tools, and (when
-enabled) write access to record findings back into it. DataHub holds end-to-end
-ML lineage: datasets -> features -> training runs -> models -> deployments.
+You have read access to a DataHub metadata catalog through MCP tools. The
+orchestrator records your structured verdict afterwards when write-back is
+enabled; mutation tools are deliberately not available inside your agent loop.
+DataHub holds end-to-end ML lineage: datasets -> features -> training runs ->
+models -> deployments.
 
 ## Your job
 
@@ -90,10 +92,8 @@ def build_check_prompt(
 ) -> str:
     """The user turn for a single model check."""
     write_note = (
-        "Write access is enabled. After emitting your verdict, record it in the "
-        "catalog: tag the model and each materially affected asset, and update "
-        "the model description with a one-line status so the next person to open "
-        "it sees the finding."
+        "Write-back is enabled. The orchestrator will record the structured verdict "
+        "after you emit it; do not attempt catalog mutations yourself."
         if write_enabled
         else "Write access is disabled. Report only — do not attempt mutations."
     )
@@ -120,10 +120,31 @@ proof. Then call `emit_verdict` exactly once.
 """
 
 
-def build_no_drift_prompt(*, model_urn: str, model_label: str, lineage_summary: str) -> str:
+def build_no_drift_prompt(
+    *,
+    model_urn: str,
+    model_label: str,
+    lineage_summary: str,
+    baseline_created: bool = False,
+    comparison_performed: bool = True,
+) -> str:
     """User turn when no schema drift was found — a governance review instead."""
+    if baseline_created:
+        drift_status = (
+            "No prior baseline existed. The current training-input schemas were recorded "
+            "as the baseline, so no drift comparison was possible on this first run."
+        )
+    elif not comparison_performed:
+        drift_status = (
+            "No baseline and no snapshot-capable upstream datasets were available, so no "
+            "drift comparison was possible."
+        )
+    else:
+        drift_status = (
+            "No upstream schema drift was detected for this model since the recorded baseline."
+        )
     return f"""\
-No upstream schema drift was detected for this model since the recorded baseline.
+{drift_status}
 
 ## Model
 {model_label}
